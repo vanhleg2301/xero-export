@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "auth": "tsx --env-file=.env src/auth.ts",
-    "export": "tsx --env-file=.env src/export.ts",
+    "auth": "tsx src/auth.ts",
+    "export": "tsx src/export.ts",
     "csv": "tsx src/csv.ts",
-    "viewer": "tsx --env-file=.env src/server.ts",
+    "viewer": "tsx src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

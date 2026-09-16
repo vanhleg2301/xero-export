@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
@@ -11,14 +12,15 @@ import {
   loadRecords,
   type AttachmentFolder,
 } from "./dataStore";
+import { getConfig, saveCredentials } from "./config";
 import { buildExcelReport } from "./excelReport";
 import { runExport } from "./exporter";
 import { buildHtmlReport } from "./htmlReport";
 import { VIEWS, type ViewSpec } from "./views";
-import { exchangeCodeForTokens, getAuthorizeUrl, getConnectionStatus, getEnv } from "./xero";
+import { exchangeCodeForTokens, getAuthorizeUrl, getConnectionStatus } from "./xero";
 import { createZip } from "./zip";
 
-const redirectUri = new URL(getEnv("XERO_REDIRECT_URI"));
+const redirectUri = new URL(getConfig().redirectUri);
 const PORT = Number(redirectUri.port || 80);
 const PUBLIC_DIR = resolve("public");
 const MAX_LOG_LINES = 2000;
@@ -199,6 +201,17 @@ function handleTenantApi(res: ServerResponse, parts: string[]) {
   sendJson(res, { error: "Not found" }, 404);
 }
 
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  return chunks.length > 0 ? (JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>) : {};
+}
+
+function openBrowser(url: string) {
+  const command = process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
+  spawn(command[0] as string, command[1] as string[], { detached: true, stdio: "ignore" }).unref();
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
@@ -209,6 +222,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     const state = randomBytes(16).toString("hex");
     pendingAuthStates.add(state);
     return redirect(res, getAuthorizeUrl(state));
+  }
+
+  if (url.pathname === "/api/credentials" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    const clientId = String(body.clientId ?? "").trim();
+    const clientSecret = String(body.clientSecret ?? "").trim();
+    if (!clientId || !clientSecret) return sendJson(res, { error: "Cần nhập cả Client ID và Client Secret." }, 400);
+    saveCredentials(clientId, clientSecret);
+    return sendJson(res, { ok: true, redirectUri: getConfig().redirectUri });
   }
 
   if (url.pathname === "/api/status") {
@@ -242,6 +264,16 @@ const server = createServer((req, res) => {
   });
 });
 
+const url = `http://localhost:${PORT}`;
+
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code !== "EADDRINUSE") throw err;
+  console.error(`Cổng ${PORT} đang bận — có thể ứng dụng đã chạy sẵn. Mở ${url} trong trình duyệt.`);
+  openBrowser(url);
+  process.exit(0);
+});
+
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Xero data viewer: http://localhost:${PORT}`);
+  console.log(`Xero data viewer: ${url}`);
+  if (!process.argv.includes("--no-open")) openBrowser(url);
 });

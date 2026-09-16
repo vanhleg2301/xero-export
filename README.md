@@ -6,29 +6,19 @@ Không có gì chạy trên server ngoài: dữ liệu lưu trong thư mục `da
 
 ## Cần chuẩn bị
 
-- Node.js 20 trở lên.
+- [Node.js](https://nodejs.org) 20 trở lên.
 - Một app trên [Xero Developer](https://developer.xero.com/app/manage), loại **Web app**, với redirect URI `http://localhost:3000/callback`.
-
-## Cài đặt
-
-```bash
-npm install
-cp .env.example .env
-```
-
-Điền `XERO_CLIENT_ID` và `XERO_CLIENT_SECRET` (lấy ở tab Configuration của app) vào `.env`.
-
-`.env`, `tokens.json`, `data/` và `export/` đều nằm trong `.gitignore`, không bị đẩy lên git.
 
 ## Chạy
 
-```bash
-npm run viewer
-```
+**Bấm đúp `Xero Export.cmd`.** Lần đầu nó tự cài các gói cần thiết, sau đó mở sẵn trình duyệt ở http://localhost:3000. Đóng cửa sổ đen là tắt ứng dụng.
 
-Mở http://localhost:3000. Toàn bộ thao tác nằm trên giao diện:
+Người dùng không cần gõ lệnh hay sửa file nào. Ai quen terminal thì dùng `npm install` rồi `npm run viewer` cũng ra kết quả như vậy.
 
-1. **Kết nối & đồng bộ → Kết nối Xero**: đăng nhập, chọn tổ chức.
+Toàn bộ thao tác nằm trên giao diện:
+
+0. **Lần đầu**: trang Kết nối & đồng bộ hiện ô nhập **Client ID** và **Client Secret** (lấy ở tab Configuration của app Xero). Nhập xong bấm Lưu, giá trị được ghi vào `.env` giúp bạn.
+1. **Kết nối Xero**: đăng nhập, chọn tổ chức.
 2. **Bắt đầu đồng bộ**: kéo dữ liệu về. Tùy chọn tải kèm file đính kèm, hoặc lấy lại toàn bộ dữ liệu mới nhất.
 3. **Tải dữ liệu về máy**, ba dạng:
    - `.zip`: CSV theo định dạng Xero + thư mục `attachments/`. Mỗi mục (Bills, Invoices...) cũng có nút tải riêng.
@@ -37,11 +27,13 @@ Mở http://localhost:3000. Toàn bộ thao tác nằm trên giao diện:
 
 Cổng 3000 là bắt buộc vì phải khớp redirect URI đã khai báo với Xero.
 
+`.env`, `tokens.json`, `data/` và `export/` đều nằm trong `.gitignore`, không bị đẩy lên git.
+
 ## Các lệnh
 
 | Lệnh | Việc |
 |---|---|
-| `npm run viewer` | Bật giao diện web ở http://localhost:3000 |
+| `npm run viewer` | Bật giao diện web ở http://localhost:3000 (giống bấm đúp `Xero Export.cmd`) |
 | `npm run auth` | Đăng nhập Xero từ terminal |
 | `npm run export` | Đồng bộ dữ liệu, chỉ lấy mục chưa có |
 | `npm run export -- --attachments` | Đồng bộ kèm tải file đính kèm |
@@ -64,6 +56,7 @@ src/
   views.ts       danh sách mục hiển thị trên giao diện
   csvTables.ts   tiện ích CSV
   zip.ts         ghi file zip (dùng zlib có sẵn của Node)
+  config.ts      đọc/ghi .env, cho phép nhập Client ID/Secret từ giao diện
 public/          giao diện web (HTML/CSS/JS thuần, không build)
 data/            dữ liệu JSON và file đính kèm tải về
 export/          kết quả của `npm run csv`

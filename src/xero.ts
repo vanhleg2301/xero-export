@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { getConfig } from "./config";
 
 const AUTHORIZE_URL = "https://login.xero.com/identity/connect/authorize";
 const TOKEN_URL = "https://identity.xero.com/connect/token";
@@ -29,15 +30,10 @@ interface StoredTokens {
 
 export class DailyLimitError extends Error {}
 
-export function getEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Thiếu biến môi trường ${name} trong .env`);
-  return value;
-}
-
 function getBasicAuthHeader(): string {
-  const credentials = `${getEnv("XERO_CLIENT_ID")}:${getEnv("XERO_CLIENT_SECRET")}`;
-  return "Basic " + Buffer.from(credentials).toString("base64");
+  const { clientId, clientSecret } = getConfig();
+  if (!clientId || !clientSecret) throw new Error("Chưa có Client ID / Client Secret của app Xero.");
+  return "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 }
 
 function saveTokens(tokens: TokenResponse, connections: XeroConnection[]): StoredTokens {
@@ -58,15 +54,10 @@ function loadTokens(): StoredTokens {
 }
 
 export function getAuthorizeUrl(state: string): string {
+  const { clientId, redirectUri, scopes } = getConfig();
   return (
     `${AUTHORIZE_URL}?` +
-    new URLSearchParams({
-      response_type: "code",
-      client_id: getEnv("XERO_CLIENT_ID"),
-      redirect_uri: getEnv("XERO_REDIRECT_URI"),
-      scope: getEnv("XERO_SCOPES"),
-      state,
-    })
+    new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: redirectUri, scope: scopes, state })
   );
 }
 
@@ -74,7 +65,7 @@ export async function exchangeCodeForTokens(code: string): Promise<XeroConnectio
   const tokenRes = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { Authorization: getBasicAuthHeader(), "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: getEnv("XERO_REDIRECT_URI") }),
+    body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: getConfig().redirectUri }),
   });
   if (!tokenRes.ok) throw new Error(`Đổi token thất bại (${tokenRes.status}): ${await tokenRes.text()}`);
   const tokens = (await tokenRes.json()) as TokenResponse;
@@ -89,7 +80,8 @@ export async function exchangeCodeForTokens(code: string): Promise<XeroConnectio
 }
 
 export function getConnectionStatus() {
-  const hasCredentials = Boolean(process.env.XERO_CLIENT_ID && process.env.XERO_CLIENT_SECRET);
+  const { clientId, clientSecret } = getConfig();
+  const hasCredentials = Boolean(clientId && clientSecret);
   if (!existsSync(TOKEN_FILE)) return { hasCredentials, isConnected: false, connections: [] as XeroConnection[] };
   const tokens = loadTokens();
   const refreshedAt = tokens.refreshed_at ?? tokens.expires_at - 30 * 60 * 1000;

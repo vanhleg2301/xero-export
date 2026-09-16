@@ -542,7 +542,18 @@ async function renderSyncPage() {
     <div class="sync-grid">
       <div class="card">
         <h3>1. Kết nối Xero</h3>
-        ${status.hasCredentials ? "" : `<div class="notice">Thiếu XERO_CLIENT_ID / XERO_CLIENT_SECRET trong file .env.</div>`}
+        ${
+          status.hasCredentials
+            ? ""
+            : `<div class="notice">
+                 <b>Chưa khai báo app Xero.</b> Vào <a href="https://developer.xero.com/app/manage" target="_blank" rel="noopener">developer.xero.com</a>,
+                 tạo app loại <b>Web app</b> với redirect URI <code>${esc(location.origin)}/callback</code>, rồi dán Client ID và Client Secret vào đây.
+               </div>
+               <label class="field">Client ID<input id="client-id" type="text" autocomplete="off" /></label>
+               <label class="field">Client Secret<input id="client-secret" type="password" autocomplete="off" /></label>
+               <div class="actions"><button class="btn primary" id="save-credentials">Lưu</button></div>
+               <p class="muted" id="credentials-error"></p>`
+        }
         <div class="status-line"><span class="dot ${status.isConnected ? "ok" : ""}"></span>${status.isConnected ? "Đã kết nối" : "Chưa kết nối"}</div>
         ${
           status.isConnected
@@ -550,9 +561,13 @@ async function renderSyncPage() {
                <p class="muted">Phiên đăng nhập còn hiệu lực đến khoảng ${esc(formatDateTime(status.refreshTokenExpiresAt))} (tự gia hạn mỗi lần đồng bộ).</p>`
             : `<p class="muted">Đăng nhập Xero và chọn tổ chức muốn lấy dữ liệu.</p>`
         }
-        <div class="actions">
-          <a class="btn ${status.isConnected ? "" : "primary"}" href="/auth/connect">${status.isConnected ? "Kết nối lại / thêm tổ chức" : "Kết nối Xero"}</a>
-        </div>
+        ${
+          status.hasCredentials
+            ? `<div class="actions">
+                 <a class="btn ${status.isConnected ? "" : "primary"}" href="/auth/connect">${status.isConnected ? "Kết nối lại / thêm tổ chức" : "Kết nối Xero"}</a>
+               </div>`
+            : ""
+        }
       </div>
 
       <div class="card">
@@ -579,6 +594,22 @@ async function renderSyncPage() {
     </div>`;
 
   renderDownloads();
+
+  document.getElementById("save-credentials")?.addEventListener("click", async () => {
+    const res = await fetch("/api/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientId: document.getElementById("client-id").value,
+        clientSecret: document.getElementById("client-secret").value,
+      }),
+    });
+    if (!res.ok) {
+      document.getElementById("credentials-error").textContent = (await res.json()).error;
+      return;
+    }
+    await renderSyncPage();
+  });
 
   document.getElementById("sync-btn").addEventListener("click", async () => {
     const params = new URLSearchParams({

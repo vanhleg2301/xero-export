@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
-import { exchangeCodeForTokens, getAuthorizeUrl, getEnv } from "./xero";
+import { getConfig } from "./config";
+import { exchangeCodeForTokens, getAuthorizeUrl } from "./xero";
 
-const redirectUri = getEnv("XERO_REDIRECT_URI");
+const redirectUri = getConfig().redirectUri;
 const { port, pathname: callbackPath } = new URL(redirectUri);
 const state = randomBytes(16).toString("hex");
 

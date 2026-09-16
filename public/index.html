@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Xero Data Viewer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="org" href="#/home">
+          <span class="org-badge" id="org-initials">X</span>
+          <span id="org-name">Đang tải...</span>
+        </a>
+        <select id="tenant-select" hidden aria-label="Chọn tổ chức"></select>
+        <nav class="nav" id="nav"></nav>
+        <a class="sync-link" href="#/sync" id="sync-link">
+          <span class="dot" id="sync-dot"></span>
+          <span id="sync-label">Kết nối &amp; đồng bộ</span>
+        </a>
+      </div>
+    </header>
+
+    <main class="page" id="main"></main>
+
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+    <aside class="drawer" id="drawer" hidden>
+      <div class="drawer-head">
+        <div>
+          <div class="crumb" id="drawer-crumb"></div>
+          <h2 id="drawer-title"></h2>
+        </div>
+        <button class="icon-btn" id="drawer-close" aria-label="Đóng">&times;</button>
+      </div>
+      <div class="drawer-body" id="drawer-body"></div>
+    </aside>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

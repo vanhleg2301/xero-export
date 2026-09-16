@@ -1,0 +1,155 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const AUTHORIZE_URL = "https://login.xero.com/identity/connect/authorize";
+const TOKEN_URL = "https://identity.xero.com/connect/token";
+export const API_BASE = "https://api.xero.com/api.xro/2.0";
+const TOKEN_FILE = "tokens.json";
+const CALL_INTERVAL_MS = 1100;
+const REFRESH_TOKEN_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000;
+
+export interface XeroConnection {
+  tenantId: string;
+  tenantName: string;
+  tenantType: string;
+}
+
+interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}
+
+interface StoredTokens {
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+  refreshed_at: number;
+  connections: XeroConnection[];
+}
+
+export class DailyLimitError extends Error {}
+
+export function getEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Thiếu biến môi trường ${name} trong .env`);
+  return value;
+}
+
+function getBasicAuthHeader(): string {
+  const credentials = `${getEnv("XERO_CLIENT_ID")}:${getEnv("XERO_CLIENT_SECRET")}`;
+  return "Basic " + Buffer.from(credentials).toString("base64");
+}
+
+function saveTokens(tokens: TokenResponse, connections: XeroConnection[]): StoredTokens {
+  const stored: StoredTokens = {
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    expires_at: Date.now() + tokens.expires_in * 1000,
+    refreshed_at: Date.now(),
+    connections,
+  };
+  writeFileSync(TOKEN_FILE, JSON.stringify(stored, null, 2));
+  return stored;
+}
+
+function loadTokens(): StoredTokens {
+  if (!existsSync(TOKEN_FILE)) throw new Error("Chưa kết nối Xero.");
+  return JSON.parse(readFileSync(TOKEN_FILE, "utf8")) as StoredTokens;
+}
+
+export function getAuthorizeUrl(state: string): string {
+  return (
+    `${AUTHORIZE_URL}?` +
+    new URLSearchParams({
+      response_type: "code",
+      client_id: getEnv("XERO_CLIENT_ID"),
+      redirect_uri: getEnv("XERO_REDIRECT_URI"),
+      scope: getEnv("XERO_SCOPES"),
+      state,
+    })
+  );
+}
+
+export async function exchangeCodeForTokens(code: string): Promise<XeroConnection[]> {
+  const tokenRes = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { Authorization: getBasicAuthHeader(), "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: getEnv("XERO_REDIRECT_URI") }),
+  });
+  if (!tokenRes.ok) throw new Error(`Đổi token thất bại (${tokenRes.status}): ${await tokenRes.text()}`);
+  const tokens = (await tokenRes.json()) as TokenResponse;
+
+  const connRes = await fetch("https://api.xero.com/connections", {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  });
+  const connections = (await connRes.json()) as XeroConnection[];
+
+  saveTokens(tokens, connections);
+  return connections;
+}
+
+export function getConnectionStatus() {
+  const hasCredentials = Boolean(process.env.XERO_CLIENT_ID && process.env.XERO_CLIENT_SECRET);
+  if (!existsSync(TOKEN_FILE)) return { hasCredentials, isConnected: false, connections: [] as XeroConnection[] };
+  const tokens = loadTokens();
+  const refreshedAt = tokens.refreshed_at ?? tokens.expires_at - 30 * 60 * 1000;
+  return {
+    hasCredentials,
+    isConnected: true,
+    connections: tokens.connections,
+    refreshTokenExpiresAt: refreshedAt + REFRESH_TOKEN_LIFETIME_MS,
+  };
+}
+
+async function refreshTokens(current: StoredTokens): Promise<StoredTokens> {
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { Authorization: getBasicAuthHeader(), "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refresh_token }),
+  });
+  if (!res.ok) {
+    throw new Error(`Refresh token thất bại (${res.status}): ${await res.text()} — hãy bấm "Kết nối lại Xero".`);
+  }
+  return saveTokens((await res.json()) as TokenResponse, current.connections);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export type XeroClient = ReturnType<typeof createXeroClient>;
+
+export function createXeroClient(log: (message: string) => void) {
+  let tokens = loadTokens();
+
+  async function request(url: string, tenantId: string, accept = "application/json"): Promise<Response> {
+    let hasRetriedAuth = false;
+    for (;;) {
+      if (Date.now() > tokens.expires_at - 60_000) tokens = await refreshTokens(tokens);
+
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${tokens.access_token}`, "xero-tenant-id": tenantId, Accept: accept },
+      });
+
+      if (res.status === 429) {
+        if (res.headers.get("X-Rate-Limit-Problem") === "day") {
+          throw new DailyLimitError("Đã chạm giới hạn 5.000 call/ngày. Đồng bộ lại vào ngày mai, phần đã tải sẽ được giữ.");
+        }
+        const waitSeconds = Number(res.headers.get("Retry-After") ?? 60);
+        log(`  Xero giới hạn tốc độ — chờ ${waitSeconds}s`);
+        await sleep(waitSeconds * 1000);
+        continue;
+      }
+
+      if (res.status === 401 && !hasRetriedAuth) {
+        hasRetriedAuth = true;
+        tokens = await refreshTokens(tokens);
+        continue;
+      }
+
+      await sleep(CALL_INTERVAL_MS);
+      if (!res.ok) throw new Error(`${res.status} ${url}: ${(await res.text()).slice(0, 500)}`);
+      return res;
+    }
+  }
+
+  return { connections: tokens.connections, request };
+}

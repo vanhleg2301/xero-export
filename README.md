@@ -30,7 +30,10 @@ Mở http://localhost:3000. Toàn bộ thao tác nằm trên giao diện:
 
 1. **Kết nối & đồng bộ → Kết nối Xero**: đăng nhập, chọn tổ chức.
 2. **Bắt đầu đồng bộ**: kéo dữ liệu về. Tùy chọn tải kèm file đính kèm, hoặc lấy lại toàn bộ dữ liệu mới nhất.
-3. **Tải dữ liệu về máy**: file .zip gồm CSV và file đính kèm. Mỗi mục (Bills, Invoices, Contacts...) cũng có nút tải riêng.
+3. **Tải dữ liệu về máy**, ba dạng:
+   - `.zip`: CSV theo định dạng Xero + thư mục `attachments/`. Mỗi mục (Bills, Invoices...) cũng có nút tải riêng.
+   - `.html`: một file duy nhất, mở bằng trình duyệt, bấm vào dòng là hiện luôn PDF/ảnh đính kèm. Không cần giải nén, gửi cho người khác xem được ngay.
+   - `.xlsx`: mỗi loại dữ liệu một sheet, ảnh nhúng thẳng vào dòng, PDF là link bấm mở (link chỉ chạy khi file xlsx nằm cạnh thư mục `attachments/` đã giải nén).
 
 Cổng 3000 là bắt buộc vì phải khớp redirect URI đã khai báo với Xero.
 
@@ -43,7 +46,7 @@ Cổng 3000 là bắt buộc vì phải khớp redirect URI đã khai báo với
 | `npm run export` | Đồng bộ dữ liệu, chỉ lấy mục chưa có |
 | `npm run export -- --attachments` | Đồng bộ kèm tải file đính kèm |
 | `npm run export -- --refresh --attachments` | Lấy lại toàn bộ dữ liệu mới nhất |
-| `npm run csv` | Xuất CSV + file đính kèm ra thư mục `export/` |
+| `npm run csv` | Xuất CSV, file .html, file .xlsx và file đính kèm ra thư mục `export/` |
 | `npm run typecheck` | Kiểm tra lỗi TypeScript |
 
 ## Cấu trúc thư mục
@@ -55,6 +58,9 @@ src/
   xero.ts        OAuth, refresh token, HTTP client
   dataStore.ts   đọc dữ liệu đã tải, dựng bộ file để xuất
   xeroFormat.ts  đổi JSON của Xero sang CSV theo cột kiểu Xero
+  htmlReport.ts  dựng file .html tự chứa, nhúng sẵn file đính kèm
+  excelReport.ts dựng workbook từ dữ liệu đã xuất
+  xlsx.ts        ghi file .xlsx (tự sinh, không dùng thư viện ngoài)
   views.ts       danh sách mục hiển thị trên giao diện
   csvTables.ts   tiện ích CSV
   zip.ts         ghi file zip (dùng zlib có sẵn của Node)

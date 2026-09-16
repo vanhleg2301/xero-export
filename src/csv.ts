@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildExportBundle, DATA_DIR, listDirs } from "./dataStore";
+import { buildExcelReport } from "./excelReport";
 import { buildHtmlReport } from "./htmlReport";
 import { VIEWS } from "./views";
 
@@ -27,4 +28,8 @@ for (const tenant of listDirs(DATA_DIR)) {
   writeFileSync(reportPath, buildHtmlReport(tenant, bundle));
   console.log(`  ${bundle.attachments.length} file đính kèm`);
   console.log(`  ${reportPath}`);
+
+  const excelPath = join(outDir, `${tenant} - Xero data.xlsx`);
+  writeFileSync(excelPath, buildExcelReport(bundle));
+  console.log(`  ${excelPath}`);
 }

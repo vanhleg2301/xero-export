@@ -196,7 +196,8 @@ async function renderHome() {
     <div class="page-head">
       <div><div class="crumb">Dashboard</div><h1>${esc(state.tenant)}</h1></div>
       <div class="actions">
-        <a class="btn" href="${apiUrl("report")}">Tải file xem offline (.html)</a>
+        <a class="btn" href="${apiUrl("report")}">Xem offline (.html)</a>
+        <a class="btn" href="${apiUrl("excel")}">Excel (.xlsx)</a>
         <a class="btn primary" href="${apiUrl("download")}">Tải toàn bộ dữ liệu (CSV + file đính kèm)</a>
       </div>
     </div>
@@ -524,6 +525,7 @@ function renderDownloads() {
           (t) => `<div class="download-row"><strong>${esc(t)}</strong>
             <span class="actions">
               <a class="btn" href="/api/tenants/${encodeURIComponent(t)}/report">Xem offline (.html)</a>
+              <a class="btn" href="/api/tenants/${encodeURIComponent(t)}/excel">Excel (.xlsx)</a>
               <a class="btn primary" href="/api/tenants/${encodeURIComponent(t)}/download">CSV + đính kèm (.zip)</a>
             </span></div>`,
         )
@@ -566,7 +568,7 @@ async function renderSyncPage() {
       <div class="card">
         <h3>3. Tải dữ liệu về máy</h3>
         <p class="muted">Một file .zip gồm CSV theo định dạng export của Xero (Invoices, Bills, Contacts...) và thư mục attachments. <code>Attachments.csv</code> liệt kê từng file thuộc chứng từ nào; tên file cũng có số chứng từ và tên đối tác.</p>
-        <p class="muted">Bản <b>.html</b> là một file duy nhất chứa mọi bảng và toàn bộ file đính kèm: mở bằng trình duyệt, bấm vào dòng là hiện luôn PDF/ảnh, không cần giải nén.</p>
+        <p class="muted">Bản <b>.html</b> là một file duy nhất chứa mọi bảng và toàn bộ file đính kèm: mở bằng trình duyệt, bấm vào dòng là hiện luôn PDF/ảnh, không cần giải nén. Bản <b>.xlsx</b> mỗi loại dữ liệu một sheet, ảnh hiện ngay trong dòng, PDF là link bấm mở (cần đặt cạnh thư mục attachments đã giải nén).</p>
         <div id="downloads"></div>
       </div>
     </div>

@@ -11,6 +11,7 @@ import {
   loadRecords,
   type AttachmentFolder,
 } from "./dataStore";
+import { buildExcelReport } from "./excelReport";
 import { runExport } from "./exporter";
 import { buildHtmlReport } from "./htmlReport";
 import { VIEWS, type ViewSpec } from "./views";
@@ -141,6 +142,15 @@ function handleTenantApi(res: ServerResponse, parts: string[]) {
 
   if (parts[3] === "download" && parts.length === 4) {
     return sendZip(res, `${tenant} - All data.zip`, buildZip(tenantDir, VIEWS));
+  }
+
+  if (parts[3] === "excel" && parts.length === 4) {
+    const workbook = buildExcelReport(buildExportBundle(tenantDir, VIEWS));
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename="report.xlsx"; filename*=UTF-8''${encodeURIComponent(`${tenant} - Xero data.xlsx`)}`,
+    });
+    return res.end(workbook);
   }
 
   if (parts[3] === "report" && parts.length === 4) {

@@ -12,6 +12,7 @@ import {
   type AttachmentFolder,
 } from "./dataStore";
 import { runExport } from "./exporter";
+import { buildHtmlReport } from "./htmlReport";
 import { VIEWS, type ViewSpec } from "./views";
 import { exchangeCodeForTokens, getAuthorizeUrl, getConnectionStatus, getEnv } from "./xero";
 import { createZip } from "./zip";
@@ -140,6 +141,15 @@ function handleTenantApi(res: ServerResponse, parts: string[]) {
 
   if (parts[3] === "download" && parts.length === 4) {
     return sendZip(res, `${tenant} - All data.zip`, buildZip(tenantDir, VIEWS));
+  }
+
+  if (parts[3] === "report" && parts.length === 4) {
+    const html = buildHtmlReport(tenant, buildExportBundle(tenantDir, VIEWS));
+    res.writeHead(200, {
+      "Content-Type": MIME_TYPES[".html"],
+      "Content-Disposition": `attachment; filename="report.html"; filename*=UTF-8''${encodeURIComponent(`${tenant} - Xero data.html`)}`,
+    });
+    return res.end(html);
   }
 
   if (parts[3] !== "views") return sendJson(res, { error: "Not found" }, 404);

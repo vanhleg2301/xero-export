@@ -195,7 +195,10 @@ async function renderHome() {
   mainEl.innerHTML = `
     <div class="page-head">
       <div><div class="crumb">Dashboard</div><h1>${esc(state.tenant)}</h1></div>
-      <a class="btn primary" href="${apiUrl("download")}">Tải toàn bộ dữ liệu (CSV + file đính kèm)</a>
+      <div class="actions">
+        <a class="btn" href="${apiUrl("report")}">Tải file xem offline (.html)</a>
+        <a class="btn primary" href="${apiUrl("download")}">Tải toàn bộ dữ liệu (CSV + file đính kèm)</a>
+      </div>
     </div>
     <div class="summary">
       <div class="card"><div class="muted">Invoices owed to you</div><div class="big">${formatMoney(owed.due)} <small class="muted">${esc(owed.currency)}</small></div>
@@ -519,7 +522,10 @@ function renderDownloads() {
     ? state.tenants
         .map(
           (t) => `<div class="download-row"><strong>${esc(t)}</strong>
-            <a class="btn primary" href="/api/tenants/${encodeURIComponent(t)}/download">Tải toàn bộ (.zip)</a></div>`,
+            <span class="actions">
+              <a class="btn" href="/api/tenants/${encodeURIComponent(t)}/report">Xem offline (.html)</a>
+              <a class="btn primary" href="/api/tenants/${encodeURIComponent(t)}/download">CSV + đính kèm (.zip)</a>
+            </span></div>`,
         )
         .join("")
     : `<p class="muted">Chưa có dữ liệu. Kết nối Xero rồi bấm "Bắt đầu đồng bộ".</p>`;
@@ -560,6 +566,7 @@ async function renderSyncPage() {
       <div class="card">
         <h3>3. Tải dữ liệu về máy</h3>
         <p class="muted">Một file .zip gồm CSV theo định dạng export của Xero (Invoices, Bills, Contacts...) và thư mục attachments. <code>Attachments.csv</code> liệt kê từng file thuộc chứng từ nào; tên file cũng có số chứng từ và tên đối tác.</p>
+        <p class="muted">Bản <b>.html</b> là một file duy nhất chứa mọi bảng và toàn bộ file đính kèm: mở bằng trình duyệt, bấm vào dòng là hiện luôn PDF/ảnh, không cần giải nén.</p>
         <div id="downloads"></div>
       </div>
     </div>

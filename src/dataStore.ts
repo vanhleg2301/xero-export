@@ -2,7 +2,15 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { matrixToCsv, type XeroRecord } from "./csvTables";
 import type { ViewSpec } from "./views";
-import { buildAttachmentIndex, buildViewCsvFiles, formatXeroDate, getRecordLabel, type AttachedRecord, type Lookups } from "./xeroFormat";
+import {
+  buildAttachmentIndex,
+  buildViewCsvFiles,
+  formatXeroDate,
+  getRecordLabel,
+  type AttachedRecord,
+  type Lookups,
+  type Matrix,
+} from "./xeroFormat";
 
 export const DATA_DIR = resolve("data");
 
@@ -13,6 +21,9 @@ export interface AttachmentFolder {
 
 export interface ExportFile {
   path: string;
+  name: string;
+  kind: "table" | "report";
+  matrix: Matrix;
   csv: string;
 }
 
@@ -115,12 +126,19 @@ export function buildExportBundle(tenantDir: string, views: ViewSpec[]): ExportB
     }
 
     for (const file of buildViewCsvFiles(view, records, lookups, (r) => pathsByRecord.get(r) ?? [])) {
-      files.push({ path: `${toSafeFileName(file.name)}.csv`, csv: matrixToCsv(file.matrix) });
+      files.push({
+        path: `${toSafeFileName(file.name)}.csv`,
+        name: file.name,
+        kind: view.kind === "report" ? "report" : "table",
+        matrix: file.matrix,
+        csv: matrixToCsv(file.matrix),
+      });
     }
   }
 
   if (attachedRecords.length > 0) {
-    files.unshift({ path: "Attachments.csv", csv: matrixToCsv(buildAttachmentIndex(attachedRecords, lookups)) });
+    const matrix = buildAttachmentIndex(attachedRecords, lookups);
+    files.unshift({ path: "Attachments.csv", name: "Attachments", kind: "table", matrix, csv: matrixToCsv(matrix) });
   }
 
   return { files, attachments };

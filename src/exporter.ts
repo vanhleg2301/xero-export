@@ -71,7 +71,7 @@ async function fetchEndpoint(ctx: ExportContext, tenantId: string, spec: Endpoin
       const items = await getRecords(ctx, tenantId, spec, { page: String(page), pageSize: "1000" });
       if (items.length === 0) break;
       all.push(...items);
-      ctx.log(`  trang ${page}: +${items.length} (tổng ${all.length})`);
+      ctx.log(`  page ${page}: +${items.length} (total ${all.length})`);
     }
     return all;
   }
@@ -120,7 +120,7 @@ async function downloadAttachments(ctx: ExportContext, tenantId: string, tenantD
       writeFileSync(join(dir, toSafeName(attachment.FileName)), Buffer.from(await fileRes.arrayBuffer()));
     }
     writeFileSync(doneMarker, "");
-    ctx.log(`  Đính kèm ${group}: ${index}/${withAttachments.length} — ${label || id} (${Attachments.length} file)`);
+    ctx.log(`  Attachments ${group}: ${index}/${withAttachments.length} — ${label || id} (${Attachments.length} file(s))`);
   }
 }
 
@@ -144,12 +144,12 @@ async function exportTenant(ctx: ExportContext, tenantId: string, tenantName: st
       } catch (err) {
         if (err instanceof DailyLimitError) throw err;
         const message = (err as Error).message;
-        ctx.log(`  Bỏ qua ${spec.path}: ${message}`);
+        ctx.log(`  Skipped ${spec.path}: ${message}`);
         failures.push(`${spec.path}: ${message}`);
         continue;
       }
       writeFileSync(file, JSON.stringify(records, null, 2));
-      ctx.log(`  Lưu ${records.length} bản ghi`);
+      ctx.log(`  Saved ${records.length} records`);
     }
 
     if (ctx.shouldDownloadAttachments) await downloadAttachments(ctx, tenantId, tenantDir, spec, records);
@@ -159,7 +159,7 @@ async function exportTenant(ctx: ExportContext, tenantId: string, tenantName: st
   rmSync(errorsFile, { force: true });
   if (failures.length > 0) {
     writeFileSync(errorsFile, failures.join("\n"));
-    ctx.log(`${failures.length} endpoint không lấy được (thường do thiếu quyền/scope).`);
+    ctx.log(`${failures.length} endpoint(s) failed, usually a missing scope or permission.`);
   }
 }
 
@@ -169,5 +169,5 @@ export async function runExport(options: ExportOptions) {
     options.log(`=== ${tenantName} ===`);
     await exportTenant(ctx, tenantId, tenantName);
   }
-  options.log("Hoàn tất đồng bộ.");
+  options.log("Sync finished.");
 }

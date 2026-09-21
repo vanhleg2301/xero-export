@@ -15,10 +15,10 @@ const server = createServer(async (req, res) => {
   }
   try {
     const code = url.searchParams.get("code");
-    if (url.searchParams.get("state") !== state || !code) throw new Error(url.searchParams.get("error") ?? "Callback không hợp lệ.");
+    if (url.searchParams.get("state") !== state || !code) throw new Error(url.searchParams.get("error") ?? "Invalid callback.");
     const connections = await exchangeCodeForTokens(code);
-    console.log(`Đã kết nối: ${connections.map((c) => c.tenantName).join(", ")}`);
-    res.end("Xong. Quay lai terminal.");
+    console.log(`Connected: ${connections.map((c) => c.tenantName).join(", ")}`);
+    res.end("Done. Go back to the terminal.");
   } catch (err) {
     console.error(err);
     res.writeHead(500).end(String(err));
@@ -28,5 +28,5 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(Number(port), () => {
-  console.log(`Mở link sau trong trình duyệt để đăng nhập Xero:\n\n${getAuthorizeUrl(state)}\n`);
+  console.log(`Open this link in your browser to sign in to Xero:\n\n${getAuthorizeUrl(state)}\n`);
 });

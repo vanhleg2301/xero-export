@@ -7,7 +7,7 @@ import { VIEWS } from "./views";
 
 const OUTPUT_DIR = "export";
 
-if (!existsSync(DATA_DIR)) throw new Error("Chưa có thư mục data/ — đồng bộ dữ liệu trước.");
+if (!existsSync(DATA_DIR)) throw new Error("No data/ folder yet — sync your data first.");
 
 for (const tenant of listDirs(DATA_DIR)) {
   console.log(`=== ${tenant} ===`);
@@ -26,7 +26,7 @@ for (const tenant of listDirs(DATA_DIR)) {
   }
   const reportPath = join(outDir, `${tenant} - Xero data.html`);
   writeFileSync(reportPath, buildHtmlReport(tenant, bundle));
-  console.log(`  ${bundle.attachments.length} file đính kèm`);
+  console.log(`  ${bundle.attachments.length} attachments`);
   console.log(`  ${reportPath}`);
 
   const excelPath = join(outDir, `${tenant} - Xero data.xlsx`);

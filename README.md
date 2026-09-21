@@ -1,85 +1,88 @@
 # xero-export
 
-Công cụ chạy trên máy cá nhân để kéo toàn bộ dữ liệu kế toán từ Xero về, xem lại bằng giao diện web giống Xero, và xuất ra CSV kèm file đính kèm.
+A desktop tool that pulls your complete Xero accounting data, lets you browse it in a Xero-like web interface, and exports it as CSV, Excel, or a single self-contained HTML file with every attachment embedded.
 
-Không có gì chạy trên server ngoài: dữ liệu lưu trong thư mục `data/` trên máy bạn, web server chỉ nghe ở `127.0.0.1`.
+Nothing runs on an external server: your data stays in the `data/` folder on your machine, and the web interface listens on `127.0.0.1` only.
 
-## Cần chuẩn bị
+## Requirements
 
-- [Node.js](https://nodejs.org) 20 trở lên.
-- Một app trên [Xero Developer](https://developer.xero.com/app/manage), loại **Web app**, với redirect URI `http://localhost:3000/callback`.
+- [Node.js](https://nodejs.org) 20 or newer.
+- An app on [Xero Developer](https://developer.xero.com/app/manage), type **Web app**, with redirect URI `http://localhost:3000/callback`.
 
-## Chạy
+## Running it
 
-**Bấm đúp `Xero Export.cmd`.** Lần đầu nó tự cài các gói cần thiết, sau đó mở sẵn trình duyệt ở http://localhost:3000. Đóng cửa sổ đen là tắt ứng dụng.
+**Double-click `Xero Export.cmd`.** The first run installs dependencies, then opens http://localhost:3000 in your browser. Close the console window to stop the app.
 
-Người dùng không cần gõ lệnh hay sửa file nào. Ai quen terminal thì dùng `npm install` rồi `npm run viewer` cũng ra kết quả như vậy.
+No commands and no file editing needed. If you prefer a terminal, `npm install` followed by `npm run viewer` does the same thing.
 
-Toàn bộ thao tác nằm trên giao diện:
+Everything happens in the browser:
 
-0. **Lần đầu**: trang Kết nối & đồng bộ hiện ô nhập **Client ID** và **Client Secret** (lấy ở tab Configuration của app Xero). Nhập xong bấm Lưu, giá trị được ghi vào `.env` giúp bạn.
-1. **Kết nối Xero**: đăng nhập, chọn tổ chức.
-2. **Bắt đầu đồng bộ**: kéo dữ liệu về. Tùy chọn tải kèm file đính kèm, hoặc lấy lại toàn bộ dữ liệu mới nhất.
-3. **Tải dữ liệu về máy**, ba dạng:
-   - `.zip`: CSV theo định dạng Xero + thư mục `attachments/`. Mỗi mục (Bills, Invoices...) cũng có nút tải riêng.
-   - `.html`: một file duy nhất, mở bằng trình duyệt, bấm vào dòng là hiện luôn PDF/ảnh đính kèm. Không cần giải nén, gửi cho người khác xem được ngay.
-   - `.xlsx`: mỗi loại dữ liệu một sheet, ảnh nhúng thẳng vào dòng, PDF là link bấm mở (link chỉ chạy khi file xlsx nằm cạnh thư mục `attachments/` đã giải nén).
+0. **First run**: the Connect & sync page asks for your **Client ID** and **Client Secret** (both on the Configuration tab of your Xero app). Save them and they are written to `.env` for you.
+1. **Connect to Xero**: sign in and choose an organisation. To add more organisations, click **Reconnect / add organisation** and pick the next one.
+2. **Start sync**: pulls the data. Optionally download attachments, or refetch everything from scratch.
+3. **Download your data**, in three shapes:
+   - `.zip`: CSVs in Xero export format plus the `attachments/` folder. Each view (Bills, Invoices, Contacts...) also has its own download button.
+   - `.html`: one single file. Open it in a browser and click a row to see its PDF or image inline. Nothing to unzip, and you can send it to someone as-is.
+   - `.xlsx`: one sheet per data type, images embedded in the rows, PDFs as clickable links (the links resolve only when the workbook sits next to the unzipped `attachments/` folder).
 
-Cổng 3000 là bắt buộc vì phải khớp redirect URI đã khai báo với Xero.
+Port 3000 is required because it has to match the redirect URI registered with Xero.
 
-`.env`, `tokens.json`, `data/` và `export/` đều nằm trong `.gitignore`, không bị đẩy lên git.
+`.env`, `tokens.json`, `data/` and `export/` are all in `.gitignore` and never reach the repository.
 
-## Các lệnh
+## Commands
 
-| Lệnh | Việc |
+| Command | What it does |
 |---|---|
-| `npm run viewer` | Bật giao diện web ở http://localhost:3000 (giống bấm đúp `Xero Export.cmd`) |
-| `npm run auth` | Đăng nhập Xero từ terminal |
-| `npm run export` | Đồng bộ dữ liệu, chỉ lấy mục chưa có |
-| `npm run export -- --attachments` | Đồng bộ kèm tải file đính kèm |
-| `npm run export -- --refresh --attachments` | Lấy lại toàn bộ dữ liệu mới nhất |
-| `npm run csv` | Xuất CSV, file .html, file .xlsx và file đính kèm ra thư mục `export/` |
-| `npm run typecheck` | Kiểm tra lỗi TypeScript |
+| `npm run viewer` | Starts the web interface on http://localhost:3000 (same as double-clicking `Xero Export.cmd`) |
+| `npm run auth` | Signs in to Xero from the terminal |
+| `npm run export` | Syncs data, fetching only what is missing |
+| `npm run export -- --attachments` | Syncs and downloads attachments |
+| `npm run export -- --refresh --attachments` | Refetches everything from Xero |
+| `npm run csv` | Writes CSV, HTML, Excel and attachments into the `export/` folder |
+| `npm run typecheck` | Runs the TypeScript checks |
 
-## Cấu trúc thư mục
+## Project layout
 
 ```
 src/
-  server.ts      web server: OAuth, tác vụ đồng bộ, API, đóng gói zip
-  exporter.ts    gọi Xero API, phân trang, giới hạn tốc độ, tải đính kèm
-  xero.ts        OAuth, refresh token, HTTP client
-  dataStore.ts   đọc dữ liệu đã tải, dựng bộ file để xuất
-  xeroFormat.ts  đổi JSON của Xero sang CSV theo cột kiểu Xero
-  htmlReport.ts  dựng file .html tự chứa, nhúng sẵn file đính kèm
-  excelReport.ts dựng workbook từ dữ liệu đã xuất
-  xlsx.ts        ghi file .xlsx (tự sinh, không dùng thư viện ngoài)
-  views.ts       danh sách mục hiển thị trên giao diện
-  csvTables.ts   tiện ích CSV
-  zip.ts         ghi file zip (dùng zlib có sẵn của Node)
-  config.ts      đọc/ghi .env, cho phép nhập Client ID/Secret từ giao diện
-public/          giao diện web (HTML/CSS/JS thuần, không build)
-data/            dữ liệu JSON và file đính kèm tải về
-export/          kết quả của `npm run csv`
+  server.ts      web server: OAuth, sync jobs, API, packaging downloads
+  exporter.ts    calls the Xero API: paging, rate limits, attachments
+  xero.ts        OAuth, token refresh, HTTP client
+  config.ts      reads and writes .env so credentials can be set from the UI
+  dataStore.ts   reads downloaded data and assembles the export bundle
+  xeroFormat.ts  turns Xero JSON into CSV columns matching Xero's own exports
+  htmlReport.ts  builds the self-contained .html file with embedded attachments
+  excelReport.ts maps the export bundle onto worksheets
+  xlsx.ts        writes .xlsx files (hand-rolled, no third-party library)
+  views.ts       the list of views shown in the interface
+  csvTables.ts   CSV helpers
+  zip.ts         writes zip files using Node's built-in zlib
+public/          the web interface (plain HTML/CSS/JS, no build step)
+data/            downloaded JSON and attachments
+export/          output of `npm run csv`
 ```
 
-## Dữ liệu lấy được
+## What gets downloaded
 
-Organisation, Accounts, TaxRates, TrackingCategories, Currencies, BrandingThemes, Users, Contacts, ContactGroups, Items, Invoices (cả hóa đơn bán và bill), CreditNotes, Quotes, PurchaseOrders, RepeatingInvoices, Payments, Prepayments, Overpayments, BatchPayments, BankTransactions, BankTransfers, ManualJournals, LinkedTransactions, Budgets, Trial Balance, Balance Sheet, và file đính kèm của từng chứng từ.
+Organisation, Accounts, TaxRates, TrackingCategories, Currencies, BrandingThemes, Users, Contacts, ContactGroups, Items, Invoices (both sales invoices and bills), CreditNotes, Quotes, PurchaseOrders, RepeatingInvoices, Payments, Prepayments, Overpayments, BatchPayments, BankTransactions, BankTransfers, ManualJournals, LinkedTransactions, Budgets, Trial Balance, Balance Sheet, and the attachments of every document that has them.
 
-## Định dạng file xuất ra
+## Export format
 
-CSV làm theo kiểu file export của Xero: mỗi dòng hàng là một dòng CSV, ngày dạng `dd/mm/yyyy`, mã thuế đổi sang tên thuế, trạng thái ghi như trên Xero (`Awaiting Payment`).
+CSVs follow Xero's own export files: one row per line item, dates as `dd/mm/yyyy`, tax codes resolved to tax rate names, statuses spelled as Xero spells them (`Awaiting Payment`).
 
-Ba cách để biết file đính kèm thuộc chứng từ nào:
+Three ways to tell which document an attachment belongs to:
 
-- Tên file có sẵn số chứng từ và tên đối tác: `attachments/Bills/PTDK 5 - PEJABAT TANAH DAERAH KLUANG - PERMIT.jpeg`.
-- `Attachments.csv` liệt kê từng file kèm số chứng từ, đối tác, ngày, số tiền, trạng thái và link mở file.
-- Hai cột `AttachmentCount` và `AttachmentFiles` ở cuối mỗi dòng trong CSV chính.
+- The file name carries the document number and contact: `attachments/Bills/PTDK 5 - PEJABAT TANAH DAERAH KLUANG - PERMIT.jpeg`.
+- `Attachments.csv` lists every file with its document number, contact, date, amount, status and a link to open it.
+- The `AttachmentCount` and `AttachmentFiles` columns at the end of each row in the main CSV.
 
-## Giới hạn
+## Limits
 
-- **Journals**: app mới không xin được scope `accounting.journals.read`; endpoint này trả về 401. Muốn lấy phải đăng ký gói Advanced và được Xero duyệt.
-- **Tốc độ**: Xero cho 60 lượt gọi/phút và 5.000 lượt/ngày cho mỗi tổ chức. Script tự giãn nhịp và chờ khi bị chặn. Nếu chạm giới hạn ngày, chạy lại hôm sau, phần đã tải được giữ nguyên.
-- **Không lấy được qua API**: dòng sao kê ngân hàng thô, trạng thái đối soát chi tiết, mẫu hóa đơn, file trong thư viện Files chưa gắn vào chứng từ.
-- **Phiên đăng nhập**: refresh token hết hạn sau 60 ngày không dùng, khi đó bấm "Kết nối lại".
-- Điều khoản của Xero cấm dùng dữ liệu API để train hoặc fine-tune mô hình AI.
+- **Five organisations**: an uncertified Xero app is capped at 5 connections. Beyond that, ask Xero to raise the limit or put the app through certification.
+- **Your own access**: you can only pull organisations your Xero user can open, and only what the granted scopes cover.
+- **Journals**: new apps cannot request `accounting.journals.read`, so that endpoint returns 401. It needs the Advanced plan plus Xero's approval.
+- **Rate limits**: 60 calls per minute and 5,000 per day *per organisation*. The tool paces itself and waits when throttled. If you hit the daily cap, run it again tomorrow — everything already downloaded is kept.
+- **Not available through the API**: raw bank statement lines, detailed reconciliation state, invoice templates, files in the Xero file library that are not attached to a document, and Payroll/Projects/Assets (separate scopes, not implemented here).
+- **Snapshot, not live data**: the numbers are whatever Xero returned at sync time.
+- **Session**: the refresh token expires after 60 days of no use; reconnect from the UI when that happens.
+- Xero's developer terms forbid using API data to train or fine-tune AI models.

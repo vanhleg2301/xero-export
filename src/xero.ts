@@ -32,7 +32,7 @@ export class DailyLimitError extends Error {}
 
 function getBasicAuthHeader(): string {
   const { clientId, clientSecret } = getConfig();
-  if (!clientId || !clientSecret) throw new Error("Chưa có Client ID / Client Secret của app Xero.");
+  if (!clientId || !clientSecret) throw new Error("No Xero app Client ID / Client Secret configured.");
   return "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 }
 
@@ -49,7 +49,7 @@ function saveTokens(tokens: TokenResponse, connections: XeroConnection[]): Store
 }
 
 function loadTokens(): StoredTokens {
-  if (!existsSync(TOKEN_FILE)) throw new Error("Chưa kết nối Xero.");
+  if (!existsSync(TOKEN_FILE)) throw new Error("Not connected to Xero yet.");
   return JSON.parse(readFileSync(TOKEN_FILE, "utf8")) as StoredTokens;
 }
 
@@ -67,7 +67,7 @@ export async function exchangeCodeForTokens(code: string): Promise<XeroConnectio
     headers: { Authorization: getBasicAuthHeader(), "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: getConfig().redirectUri }),
   });
-  if (!tokenRes.ok) throw new Error(`Đổi token thất bại (${tokenRes.status}): ${await tokenRes.text()}`);
+  if (!tokenRes.ok) throw new Error(`Token exchange failed (${tokenRes.status}): ${await tokenRes.text()}`);
   const tokens = (await tokenRes.json()) as TokenResponse;
 
   const connRes = await fetch("https://api.xero.com/connections", {
@@ -100,7 +100,7 @@ async function refreshTokens(current: StoredTokens): Promise<StoredTokens> {
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refresh_token }),
   });
   if (!res.ok) {
-    throw new Error(`Refresh token thất bại (${res.status}): ${await res.text()} — hãy bấm "Kết nối lại Xero".`);
+    throw new Error(`Refreshing the token failed (${res.status}): ${await res.text()} — click "Reconnect to Xero".`);
   }
   return saveTokens((await res.json()) as TokenResponse, current.connections);
 }
@@ -123,10 +123,10 @@ export function createXeroClient(log: (message: string) => void) {
 
       if (res.status === 429) {
         if (res.headers.get("X-Rate-Limit-Problem") === "day") {
-          throw new DailyLimitError("Đã chạm giới hạn 5.000 call/ngày. Đồng bộ lại vào ngày mai, phần đã tải sẽ được giữ.");
+          throw new DailyLimitError("Hit Xero limit of 5,000 calls per day. Sync again tomorrow; everything already downloaded is kept.");
         }
         const waitSeconds = Number(res.headers.get("Retry-After") ?? 60);
-        log(`  Xero giới hạn tốc độ — chờ ${waitSeconds}s`);
+        log(`  Xero rate limit — waiting ${waitSeconds}s`);
         await sleep(waitSeconds * 1000);
         continue;
       }

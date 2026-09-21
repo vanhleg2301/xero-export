@@ -71,7 +71,7 @@ function renderPreview(paths) {
     .map((path) => {
       const file = FILES[path];
       const name = path.split("/").pop();
-      if (!file) return '<div class="file"><div class="file-head"><b>' + esc(name) + "</b><span>Không có trong file này</span></div></div>";
+      if (!file) return '<div class="file"><div class="file-head"><b>' + esc(name) + "</b><span>Not included in this file</span></div></div>";
       const url = getBlobUrl(path);
       const body = file.type.indexOf("image/") === 0
         ? '<img src="' + url + '" alt="' + esc(name) + '" />'
@@ -79,7 +79,7 @@ function renderPreview(paths) {
           ? '<iframe src="' + url + '" title="' + esc(name) + '"></iframe>'
           : "";
       return '<div class="file"><div class="file-head"><b>' + esc(name) + "</b>" +
-        '<span><a href="' + url + '" target="_blank" rel="noopener">Mở tab mới</a> · <a href="' + url + '" download="' + esc(name) + '">Tải về</a></span></div>' +
+        '<span><a href="' + url + '" target="_blank" rel="noopener">Open in new tab</a> · <a href="' + url + '" download="' + esc(name) + '">Download</a></span></div>' +
         body + "</div>";
     })
     .join("");
@@ -90,10 +90,10 @@ function renderTable() {
   const container = document.getElementById("table");
   const needle = query.toLowerCase();
   visibleRows = needle ? sheet.rows.filter((row) => row.join(" ").toLowerCase().indexOf(needle) >= 0) : sheet.rows;
-  document.getElementById("count").textContent = sheet.kind === "table" ? visibleRows.length + " dòng" : "";
+  document.getElementById("count").textContent = sheet.kind === "table" ? visibleRows.length + " rows" : "";
 
   if (visibleRows.length === 0) {
-    container.innerHTML = '<div class="empty">Không có dữ liệu.</div>';
+    container.innerHTML = '<div class="empty">No data.</div>';
     return;
   }
 
@@ -198,7 +198,7 @@ export function buildHtmlReport(tenantName: string, bundle: ExportBundle): strin
   );
 
   return `<!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -208,10 +208,10 @@ export function buildHtmlReport(tenantName: string, bundle: ExportBundle): strin
 <body>
 <header>
   <h1>${escapeHtml(tenantName)}</h1>
-  <p>Dữ liệu Xero, xuất lúc ${escapeHtml(new Date().toLocaleString("en-GB"))}. Bấm vào dòng có kẹp giấy để xem file đính kèm ngay tại chỗ.</p>
+  <p>Xero data, exported ${escapeHtml(new Date().toLocaleString("en-GB"))}. Click any row with a paperclip to view its attachments inline.</p>
 </header>
 <div class="tabs" id="tabs"></div>
-<div class="toolbar"><input id="search" type="search" placeholder="Tìm trong bảng..." /><span class="muted" id="count"></span></div>
+<div class="toolbar"><input id="search" type="search" placeholder="Search this table..." /><span class="muted" id="count"></span></div>
 <main><div class="card" id="table"></div></main>
 <script type="application/json" id="sheets">${toInlineJson(sheets)}</script>
 <script type="application/json" id="files">${toInlineJson(files)}</script>

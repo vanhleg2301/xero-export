@@ -111,7 +111,7 @@ function startSync(shouldDownloadAttachments: boolean, shouldRefresh: boolean): 
     })
     .catch((err: unknown) => {
       job.status = "failed";
-      log(`LỖI: ${err instanceof Error ? err.message : String(err)}`);
+      log(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
     })
     .finally(() => {
       job.finishedAt = Date.now();
@@ -127,7 +127,7 @@ async function handleAuthCallback(url: URL, res: ServerResponse) {
 
   if (error || !code || !pendingAuthStates.delete(state)) {
     res.writeHead(400, { "Content-Type": MIME_TYPES[".html"] });
-    res.end(`<p>Kết nối Xero thất bại: ${error ?? "callback không hợp lệ"}.</p><p><a href="/#/sync">Quay lại</a></p>`);
+    res.end(`<p>Connecting to Xero failed: ${error ?? "invalid callback"}.</p><p><a href="/#/sync">Go back</a></p>`);
     return;
   }
 
@@ -228,7 +228,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     const body = await readJsonBody(req);
     const clientId = String(body.clientId ?? "").trim();
     const clientSecret = String(body.clientSecret ?? "").trim();
-    if (!clientId || !clientSecret) return sendJson(res, { error: "Cần nhập cả Client ID và Client Secret." }, 400);
+    if (!clientId || !clientSecret) return sendJson(res, { error: "Both Client ID and Client Secret are required." }, 400);
     saveCredentials(clientId, clientSecret);
     return sendJson(res, { ok: true, redirectUri: getConfig().redirectUri });
   }
@@ -239,7 +239,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
   if (url.pathname === "/api/sync") {
     if (req.method === "POST") {
-      if (!getConnectionStatus().isConnected) return sendJson(res, { error: "Chưa kết nối Xero." }, 400);
+      if (!getConnectionStatus().isConnected) return sendJson(res, { error: "Not connected to Xero yet." }, 400);
       const isStarted = startSync(url.searchParams.get("attachments") === "1", url.searchParams.get("refresh") === "1");
       return sendJson(res, syncJob, isStarted ? 202 : 409);
     }
@@ -268,7 +268,7 @@ const url = `http://localhost:${PORT}`;
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code !== "EADDRINUSE") throw err;
-  console.error(`Cổng ${PORT} đang bận — có thể ứng dụng đã chạy sẵn. Mở ${url} trong trình duyệt.`);
+  console.error(`Port ${PORT} is busy — the app may already be running. Open ${url} in your browser.`);
   openBrowser(url);
   process.exit(0);
 });

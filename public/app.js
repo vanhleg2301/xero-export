@@ -17,6 +17,8 @@ const state = {
   accounts: [],
   accountEdit: null,
   accountFilter: "",
+  entries: [],
+  journalLines: [],
 };
 
 const mainEl = document.getElementById("main");
@@ -132,14 +134,39 @@ function compareValues(a, b) {
 }
 
 // ---------- navigation ----------
+const BOOKS_PAGES = [
+  { id: "journal", label: "Journal" },
+  { id: "trial-balance", label: "Trial balance" },
+  { id: "accounts", label: "Chart of accounts" },
+];
+
+function getRoute() {
+  const hash = location.hash.replace(/^#\//, "");
+  if (hash === "sync") return { area: "sync", page: "sync" };
+  if (hash.startsWith("books")) return { area: "books", page: hash.split("/")[1] || "journal" };
+  return { area: "data", page: hash || "home" };
+}
+
 function renderNav() {
   const nav = document.getElementById("nav");
+  const route = getRoute();
+  document.getElementById("area-data").classList.toggle("active", route.area !== "books");
+  document.getElementById("area-books").classList.toggle("active", route.area === "books");
+
   if (!state.tenant) {
     nav.innerHTML = "";
     return;
   }
-  const booksLink = `<a class="nav-plain ${state.view === null && location.hash === "#/books" ? "active" : ""}" href="#/books">Books</a>`;
-  nav.innerHTML = booksLink + GROUP_ORDER.map((group) => {
+
+  if (route.area === "books") {
+    nav.innerHTML = BOOKS_PAGES.map(
+      (page) =>
+        `<a class="nav-plain ${route.page === page.id ? "active" : ""}" href="#/books/${page.id}">${esc(page.label)}</a>`,
+    ).join("");
+    return;
+  }
+
+  nav.innerHTML = `<a class="nav-plain ${route.page === "home" ? "active" : ""}" href="#/home">Dashboard</a>` + GROUP_ORDER.map((group) => {
     const items = state.views.filter((v) => v.group === group);
     const isActive = state.view?.group === group;
     return `
@@ -156,26 +183,28 @@ function renderNav() {
 
 async function handleRoute() {
   closeDrawer();
-  const route = location.hash.replace(/^#\//, "") || "home";
+  const route = getRoute();
   document.activeElement?.blur();
 
-  if (route === "books" && state.tenant) {
+  if (route.area === "books" && state.tenant) {
     state.view = null;
     renderNav();
-    return renderBooksPage();
+    if (route.page === "accounts") return renderAccountsPage();
+    if (route.page === "trial-balance") return renderTrialBalancePage();
+    return renderJournalPage();
   }
 
-  if (route === "sync" || !state.tenant) {
+  if (route.area === "sync" || !state.tenant) {
     state.view = null;
     renderNav();
-    if (route !== "sync") {
+    if (route.area !== "sync") {
       location.hash = "#/sync";
       return;
     }
     return renderSyncPage();
   }
 
-  state.view = state.views.find((v) => v.id === route) ?? null;
+  state.view = state.views.find((v) => v.id === route.page) ?? null;
   renderNav();
   if (!state.view) return renderHome();
 
@@ -518,7 +547,7 @@ function renderReportPage() {
 // ---------- books: chart of accounts ----------
 const ACCOUNT_CLASSES = ["asset", "liability", "equity", "revenue", "expense"];
 
-async function renderBooksPage() {
+async function renderAccountsPage() {
   const data = await fetchJson(apiUrl("books/accounts"));
   state.accounts = data.accounts;
   state.accountEdit = null;
@@ -650,6 +679,278 @@ async function saveAccount() {
   state.accounts = data.accounts;
   closeDrawer();
   renderAccountsTable();
+}
+
+// ---------- books: journal ----------
+async function renderJournalPage() {
+  const data = await fetchJson(apiUrl("books/journal"));
+  state.entries = data.entries;
+
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Accounting</div><h1>Journal</h1></div>
+      <div class="actions">
+        <button class="btn" id="import-docs">Post Xero documents</button>
+        <button class="btn primary" id="new-entry">New journal entry</button>
+      </div>
+    </div>
+    <p class="muted">Every posted entry balances: total debits equal total credits. Posted entries are never edited — void one and it posts the mirror image.</p>
+    <div class="card">
+      <div class="toolbar"><span class="muted" id="journal-note">${state.entries.length} entries</span></div>
+      <div class="table-wrap" id="journal-table"></div>
+    </div>`;
+
+  document.getElementById("import-docs").addEventListener("click", importDocuments);
+  document.getElementById("new-entry").addEventListener("click", openEntryForm);
+  renderJournalTable();
+}
+
+function renderJournalTable() {
+  const area = document.getElementById("journal-table");
+  if (state.entries.length === 0) {
+    area.innerHTML = `<div class="empty-state">No entries yet. Click "Post Xero documents" to turn the invoices, bills and payments you synced into journal entries.</div>`;
+    return;
+  }
+
+  const rows = [...state.entries].sort((a, b) => b.date.localeCompare(a.date) || b.number.localeCompare(a.number));
+  area.innerHTML = `
+    <table class="data">
+      <thead><tr><th>Date</th><th>Entry</th><th>Narration</th><th>Source</th><th class="right">Total</th><th>Status</th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (entry) => `<tr data-id="${esc(entry.id)}">
+              <td>${esc(formatDate(entry.date))}</td>
+              <td>${esc(entry.number)}</td>
+              <td>${esc(entry.narration)}</td>
+              <td>${esc(entry.sourceType)}</td>
+              <td class="right">${formatMoney(entry.total)}</td>
+              <td>${entry.status === "posted" ? '<span class="badge paid">Posted</span>' : '<span class="badge voided">Voided</span>'}</td>
+            </tr>`,
+          )
+          .join("")}
+      </tbody>
+    </table>`;
+
+  area.querySelectorAll("tbody tr").forEach((tr) =>
+    tr.addEventListener("click", () => openEntryDetail(state.entries.find((e) => e.id === tr.dataset.id))),
+  );
+}
+
+async function importDocuments() {
+  const res = await fetch(apiUrl("books/journal/import"), { method: "POST" });
+  const data = await res.json();
+  const note = document.getElementById("journal-note");
+  if (!res.ok) {
+    note.textContent = data.error;
+    return;
+  }
+  state.entries = data.entries;
+  renderJournalTable();
+  note.textContent =
+    `${data.posted} posted, ${data.skipped} skipped` + (data.failures.length ? ` — ${data.failures.length} could not post: ${data.failures[0]}` : "");
+}
+
+function renderEntryLines(entry) {
+  return `
+    <table class="lines">
+      <thead><tr><th>Account</th><th>Description</th><th class="right">Debit</th><th class="right">Credit</th></tr></thead>
+      <tbody>
+        ${entry.lines
+          .map(
+            (line) => `<tr>
+              <td>${esc(line.accountCode)} ${esc(line.accountName)}</td>
+              <td>${esc(line.description)}</td>
+              <td class="right">${line.debit ? formatMoney(line.debit) : ""}</td>
+              <td class="right">${line.credit ? formatMoney(line.credit) : ""}</td>
+            </tr>`,
+          )
+          .join("")}
+      </tbody>
+      <tfoot><tr><td colspan="2">Total</td><td class="right">${formatMoney(entry.total)}</td><td class="right">${formatMoney(entry.total)}</td></tr></tfoot>
+    </table>`;
+}
+
+function openEntryDetail(entry) {
+  document.getElementById("drawer-crumb").textContent = `Accounting › Journal › ${entry.number}`;
+  document.getElementById("drawer-title").textContent = entry.narration || entry.number;
+  document.getElementById("drawer-body").innerHTML = `
+    ${renderMeta([
+      ["Date", esc(formatDate(entry.date))],
+      ["Source", esc(entry.sourceType + (entry.sourceLabel ? ` · ${entry.sourceLabel}` : ""))],
+      ["Status", entry.status === "posted" ? '<span class="badge paid">Posted</span>' : '<span class="badge voided">Voided</span>'],
+    ])}
+    ${renderEntryLines(entry)}
+    ${entry.status === "posted" ? '<div class="actions"><button class="btn" id="void-entry">Void this entry</button></div>' : ""}
+    <p class="muted" id="entry-note"></p>`;
+
+  document.getElementById("void-entry")?.addEventListener("click", async () => {
+    const res = await fetch(apiUrl(`books/journal/${entry.id}/void`), { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) {
+      document.getElementById("entry-note").textContent = data.error;
+      return;
+    }
+    state.entries = data.entries;
+    closeDrawer();
+    renderJournalTable();
+    document.getElementById("journal-note").textContent = `${entry.number} voided by ${data.reversal.number}`;
+  });
+
+  drawerEl.hidden = false;
+  backdropEl.hidden = false;
+}
+
+async function openEntryForm() {
+  if (state.accounts.length === 0) state.accounts = (await fetchJson(apiUrl("books/accounts"))).accounts;
+  state.journalLines = [
+    { accountCode: "", description: "", debit: "", credit: "" },
+    { accountCode: "", description: "", debit: "", credit: "" },
+  ];
+
+  document.getElementById("drawer-crumb").textContent = "Accounting › Journal";
+  document.getElementById("drawer-title").textContent = "New journal entry";
+  document.getElementById("drawer-body").innerHTML = `
+    <label class="field">Date<input id="je-date" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
+    <label class="field">Narration<input id="je-narration" type="text" placeholder="What is this entry for?" /></label>
+    <div id="je-lines"></div>
+    <div class="actions">
+      <button class="btn" id="je-add-line">Add line</button>
+      <button class="btn primary" id="je-save">Post entry</button>
+    </div>
+    <p class="muted" id="je-note"></p>`;
+
+  document.getElementById("je-add-line").addEventListener("click", () => {
+    readEntryForm();
+    state.journalLines.push({ accountCode: "", description: "", debit: "", credit: "" });
+    renderEntryForm();
+  });
+  document.getElementById("je-save").addEventListener("click", saveEntry);
+
+  renderEntryForm();
+  drawerEl.hidden = false;
+  backdropEl.hidden = false;
+}
+
+function renderEntryForm() {
+  const options = state.accounts
+    .filter((a) => a.isActive)
+    .map((a) => `<option value="${esc(a.code)}">${esc(a.code)} — ${esc(a.name)}</option>`)
+    .join("");
+
+  document.getElementById("je-lines").innerHTML = `
+    <table class="lines je-form">
+      <thead><tr><th>Account</th><th>Description</th><th class="right">Debit</th><th class="right">Credit</th></tr></thead>
+      <tbody>
+        ${state.journalLines
+          .map(
+            (line, i) => `<tr>
+              <td><select data-field="accountCode" data-i="${i}"><option value="">Select…</option>${options}</select></td>
+              <td><input data-field="description" data-i="${i}" type="text" value="${esc(line.description)}" /></td>
+              <td><input data-field="debit" data-i="${i}" type="number" step="0.01" value="${esc(line.debit)}" /></td>
+              <td><input data-field="credit" data-i="${i}" type="number" step="0.01" value="${esc(line.credit)}" /></td>
+            </tr>`,
+          )
+          .join("")}
+      </tbody>
+    </table>`;
+
+  document.querySelectorAll("#je-lines select").forEach((select) => {
+    select.value = state.journalLines[Number(select.dataset.i)].accountCode;
+  });
+  updateEntryTotals();
+  document.querySelectorAll("#je-lines input, #je-lines select").forEach((field) =>
+    field.addEventListener("input", () => {
+      readEntryForm();
+      updateEntryTotals();
+    }),
+  );
+}
+
+function readEntryForm() {
+  document.querySelectorAll("#je-lines [data-field]").forEach((field) => {
+    state.journalLines[Number(field.dataset.i)][field.dataset.field] = field.value;
+  });
+}
+
+function updateEntryTotals() {
+  const sum = (key) => state.journalLines.reduce((total, line) => total + (Number(line[key]) || 0), 0);
+  const debit = sum("debit");
+  const credit = sum("credit");
+  const note = document.getElementById("je-note");
+  note.textContent = `Debits ${formatMoney(debit)} · Credits ${formatMoney(credit)}` +
+    (Math.abs(debit - credit) < 0.005 && debit > 0 ? " · balanced" : " · out of balance");
+  note.className = Math.abs(debit - credit) < 0.005 && debit > 0 ? "good" : "muted";
+}
+
+async function saveEntry() {
+  readEntryForm();
+  const payload = {
+    date: document.getElementById("je-date").value,
+    narration: document.getElementById("je-narration").value,
+    lines: state.journalLines
+      .filter((line) => line.accountCode && (Number(line.debit) || Number(line.credit)))
+      .map((line) => ({
+        accountCode: line.accountCode,
+        description: line.description,
+        debit: Number(line.debit) || 0,
+        credit: Number(line.credit) || 0,
+      })),
+  };
+  const res = await fetch(apiUrl("books/journal"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    document.getElementById("je-note").textContent = data.error;
+    document.getElementById("je-note").className = "muted";
+    return;
+  }
+  state.entries = data.entries;
+  closeDrawer();
+  renderJournalTable();
+  document.getElementById("journal-note").textContent = `${data.entry.number} posted`;
+}
+
+// ---------- books: trial balance ----------
+async function renderTrialBalancePage() {
+  const data = await fetchJson(apiUrl("books/trial-balance"));
+
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Accounting</div><h1>Trial balance</h1></div>
+      <div class="${data.isBalanced ? "balance-ok" : "balance-bad"}">
+        ${data.isBalanced ? "In balance" : "Out of balance"}
+      </div>
+    </div>
+    <p class="muted">Every posted journal line, summed per account. ${data.entryCount} entries included.</p>
+    <div class="card">
+      <div class="table-wrap">
+        ${
+          data.rows.length === 0
+            ? '<div class="empty-state">Nothing posted yet.</div>'
+            : `<table class="data">
+                <thead><tr><th>Code</th><th>Account</th><th>Class</th><th class="right">Debit</th><th class="right">Credit</th></tr></thead>
+                <tbody>
+                  ${data.rows
+                    .map(
+                      (row) => `<tr>
+                        <td>${esc(row.code)}</td>
+                        <td>${esc(row.name)}</td>
+                        <td>${esc(row.accountClass)}</td>
+                        <td class="right">${row.debit ? formatMoney(row.debit) : ""}</td>
+                        <td class="right">${row.credit ? formatMoney(row.credit) : ""}</td>
+                      </tr>`,
+                    )
+                    .join("")}
+                </tbody>
+                <tfoot><tr><td colspan="3">Total</td><td class="right">${formatMoney(data.totalDebit)}</td><td class="right">${formatMoney(data.totalCredit)}</td></tr></tfoot>
+              </table>`
+        }
+      </div>
+    </div>`;
 }
 
 // ---------- sync page ----------

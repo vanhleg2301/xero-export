@@ -90,7 +90,7 @@ a:hover {
 
 .nav {
   display: flex;
-  height: 100%;
+  align-items: stretch;
 }
 
 .nav-group {
@@ -115,6 +115,71 @@ a:hover {
   color: #fff;
   border-bottom-color: var(--cyan);
 }
+
+.areas {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.areas a {
+  color: #d8e6f3;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.areas a:hover { text-decoration: none; color: #fff; }
+.areas a.active { background: #fff; color: var(--navy); }
+
+.subbar {
+  background: var(--navy-2);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.subbar .nav {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 42px;
+  overflow-x: auto;
+}
+
+.balance-ok, .balance-bad {
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 6px 14px;
+  border: 1px solid;
+}
+
+.balance-ok { color: #1c7a43; background: #dff5e7; border-color: #a8dcbe; }
+.balance-bad { color: #a12c2c; background: #fde4e4; border-color: #f0b6b6; }
+
+.badge.posted, .badge.paid { background: #dff5e7; color: #1c7a43; }
+.badge.voided { background: #fde4e4; color: #a12c2c; }
+
+table.lines tfoot td {
+  font-weight: 600;
+  border-top: 2px solid var(--border);
+}
+
+table.je-form select,
+table.je-form input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  color: var(--text);
+  background: #fff;
+}
+
+table.je-form input[type="number"] { text-align: right; }
+
+.good { color: #1c7a43; font-weight: 600; }
 
 .nav-plain {
   display: inline-flex;

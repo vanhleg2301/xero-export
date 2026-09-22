@@ -16,6 +16,7 @@ export interface Account {
   taxRate: string;
   description: string;
   isActive: boolean;
+  systemAccount?: string;
   xeroAccountId?: string;
 }
 
@@ -42,10 +43,16 @@ const XERO_TYPE_LABELS: Record<string, string> = {
 
 export class BooksError extends Error {}
 
-const getBooksDir = (tenantDir: string) => join(tenantDir, "books");
-const getAccountsFile = (tenantDir: string) => join(getBooksDir(tenantDir), "accounts.json");
+const getBooksFile = (tenantDir: string, name: string) => join(tenantDir, "books", name);
 
-function writeJsonFile(file: string, value: unknown) {
+export function readBooksFile<T>(tenantDir: string, name: string): T | undefined {
+  const file = getBooksFile(tenantDir, name);
+  return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as T) : undefined;
+}
+
+// Write to a temp file first so a crash mid-write cannot leave the books truncated.
+export function writeBooksFile(tenantDir: string, name: string, value: unknown) {
+  const file = getBooksFile(tenantDir, name);
   mkdirSync(join(file, ".."), { recursive: true });
   const temp = `${file}.tmp`;
   writeFileSync(temp, JSON.stringify(value, null, 2));
@@ -53,13 +60,12 @@ function writeJsonFile(file: string, value: unknown) {
 }
 
 export function loadAccounts(tenantDir: string): Account[] {
-  const file = getAccountsFile(tenantDir);
-  return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Account[]) : [];
+  return readBooksFile<Account[]>(tenantDir, "accounts.json") ?? [];
 }
 
 function saveAccounts(tenantDir: string, accounts: Account[]) {
   const sorted = [...accounts].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
-  writeJsonFile(getAccountsFile(tenantDir), sorted);
+  writeBooksFile(tenantDir, "accounts.json", sorted);
   return sorted;
 }
 
@@ -70,7 +76,8 @@ function toAccountClass(value: unknown): AccountClass {
   return (ACCOUNT_CLASSES as readonly string[]).includes(key) ? (key as AccountClass) : "expense";
 }
 
-// Seeding keeps accounts the user already edited and only adds codes that are missing.
+// Seeding keeps accounts the user already edited: it adds missing codes and fills in the
+// Xero links (system account, id) on accounts that do not have them yet.
 export function seedAccountsFromXero(tenantDir: string): { added: number; kept: number } {
   const existing = loadAccounts(tenantDir);
   const byCode = new Map(existing.map((account) => [account.code.toLowerCase(), account]));
@@ -79,7 +86,14 @@ export function seedAccountsFromXero(tenantDir: string): { added: number; kept: 
 
   for (const record of xeroAccounts as XeroRecord[]) {
     const code = asString(record.Code).trim();
-    if (!code || byCode.has(code.toLowerCase())) continue;
+    if (!code) continue;
+
+    const current = byCode.get(code.toLowerCase());
+    if (current) {
+      current.systemAccount ??= asString(record.SystemAccount) || undefined;
+      current.xeroAccountId ??= asString(record.AccountID) || undefined;
+      continue;
+    }
     added.push({
       id: randomUUID(),
       code,
@@ -89,11 +103,12 @@ export function seedAccountsFromXero(tenantDir: string): { added: number; kept: 
       taxRate: asString(record.TaxType),
       description: asString(record.Description),
       isActive: asString(record.Status) !== "ARCHIVED",
+      systemAccount: asString(record.SystemAccount) || undefined,
       xeroAccountId: asString(record.AccountID) || undefined,
     });
   }
 
-  if (added.length > 0) saveAccounts(tenantDir, [...existing, ...added]);
+  saveAccounts(tenantDir, [...existing, ...added]);
   return { added: added.length, kept: existing.length };
 }
 
@@ -133,6 +148,7 @@ export function upsertAccount(tenantDir: string, input: AccountInput): Account {
     taxRate: (input.taxRate ?? existing?.taxRate ?? "").trim(),
     description: (input.description ?? existing?.description ?? "").trim(),
     isActive: input.isActive ?? existing?.isActive ?? true,
+    systemAccount: existing?.systemAccount,
     xeroAccountId: existing?.xeroAccountId,
   };
 

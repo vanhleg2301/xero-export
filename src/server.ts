@@ -13,6 +13,7 @@ import {
   type AttachmentFolder,
 } from "./dataStore";
 import { BooksError, loadAccounts, seedAccountsFromXero, upsertAccount } from "./books";
+import { getTrialBalance, importXeroDocuments, loadJournal, postEntry, voidEntry } from "./ledger";
 import { getConfig, saveCredentials } from "./config";
 import { buildExcelReport } from "./excelReport";
 import { runExport } from "./exporter";
@@ -137,9 +138,40 @@ async function handleAuthCallback(url: URL, res: ServerResponse) {
 }
 
 async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantDir: string, parts: string[]) {
-  if (parts[4] !== "accounts") return sendJson(res, { error: "Not found" }, 404);
-
   try {
+    if (parts[4] === "journal") {
+      if (req.method === "POST" && parts[5] === "import") {
+        return sendJson(res, { ...importXeroDocuments(tenantDir), entries: loadJournal(tenantDir) });
+      }
+      if (req.method === "POST" && parts[6] === "void") {
+        const reversal = voidEntry(tenantDir, parts[5]);
+        return sendJson(res, { reversal, entries: loadJournal(tenantDir) });
+      }
+      if (req.method === "POST" && parts.length === 5) {
+        const body = await readJsonBody(req);
+        const entry = postEntry(tenantDir, {
+          date: String(body.date ?? ""),
+          narration: String(body.narration ?? ""),
+          lines: Array.isArray(body.lines)
+            ? (body.lines as Record<string, unknown>[]).map((line) => ({
+                accountCode: String(line.accountCode ?? ""),
+                description: line.description === undefined ? undefined : String(line.description),
+                debit: Number(line.debit ?? 0),
+                credit: Number(line.credit ?? 0),
+              }))
+            : [],
+        });
+        return sendJson(res, { entry, entries: loadJournal(tenantDir) });
+      }
+      if (parts.length === 5) return sendJson(res, { entries: loadJournal(tenantDir) });
+    }
+
+    if (parts[4] === "trial-balance" && parts.length === 5) {
+      return sendJson(res, getTrialBalance(tenantDir));
+    }
+
+    if (parts[4] !== "accounts") return sendJson(res, { error: "Not found" }, 404);
+
     if (req.method === "POST" && parts[5] === "seed") {
       return sendJson(res, { ...seedAccountsFromXero(tenantDir), accounts: loadAccounts(tenantDir) });
     }

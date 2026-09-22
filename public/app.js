@@ -19,6 +19,9 @@ const state = {
   accountFilter: "",
   entries: [],
   journalLines: [],
+  plFrom: "",
+  plTo: "",
+  bsAsOf: "",
 };
 
 const mainEl = document.getElementById("main");
@@ -137,7 +140,10 @@ function compareValues(a, b) {
 const BOOKS_PAGES = [
   { id: "journal", label: "Journal" },
   { id: "trial-balance", label: "Trial balance" },
+  { id: "profit-and-loss", label: "Profit & loss" },
+  { id: "balance-sheet", label: "Balance sheet" },
   { id: "accounts", label: "Chart of accounts" },
+  { id: "settings", label: "Settings" },
 ];
 
 function getRoute() {
@@ -191,6 +197,9 @@ async function handleRoute() {
     renderNav();
     if (route.page === "accounts") return renderAccountsPage();
     if (route.page === "trial-balance") return renderTrialBalancePage();
+    if (route.page === "profit-and-loss") return renderProfitAndLossPage();
+    if (route.page === "balance-sheet") return renderBalanceSheetPage();
+    if (route.page === "settings") return renderBooksSettingsPage();
     return renderJournalPage();
   }
 
@@ -951,6 +960,139 @@ async function renderTrialBalancePage() {
         }
       </div>
     </div>`;
+}
+
+// ---------- books: financial reports ----------
+function renderReportSection(section, options = {}) {
+  return `
+    <tbody>
+      <tr class="section-head"><td colspan="2">${esc(section.title)}</td></tr>
+      ${
+        section.lines.length === 0
+          ? '<tr><td colspan="2" class="muted">Nothing posted</td></tr>'
+          : section.lines
+              .map(
+                (line) => `<tr>
+                  <td>${line.code ? `<span class="muted">${esc(line.code)}</span> ` : ""}${esc(line.name)}</td>
+                  <td class="right">${formatMoney(line.amount)}</td>
+                </tr>`,
+              )
+              .join("")
+      }
+      <tr class="section-total"><td>Total ${esc(section.title.toLowerCase())}</td><td class="right">${formatMoney(section.total)}</td></tr>
+      ${options.spacer === false ? "" : '<tr class="spacer"><td colspan="2"></td></tr>'}
+    </tbody>`;
+}
+
+async function renderProfitAndLossPage() {
+  const params = new URLSearchParams();
+  if (state.plFrom) params.set("from", state.plFrom);
+  if (state.plTo) params.set("to", state.plTo);
+  const data = await fetchJson(apiUrl(`books/profit-and-loss?${params}`));
+  state.plFrom = data.from;
+  state.plTo = data.to;
+
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Accounting</div><h1>Profit &amp; loss</h1></div>
+      <div class="actions">
+        <label class="inline-field">From <input type="date" id="pl-from" value="${esc(data.from)}" /></label>
+        <label class="inline-field">To <input type="date" id="pl-to" value="${esc(data.to)}" /></label>
+      </div>
+    </div>
+    <div class="card report-card">
+      <table class="data report">
+        ${renderReportSection(data.revenue)}
+        ${renderReportSection(data.expenses)}
+        <tbody>
+          <tr class="grand-total"><td>Net ${data.netProfit >= 0 ? "profit" : "loss"}</td><td class="right">${formatMoney(data.netProfit)}</td></tr>
+        </tbody>
+      </table>
+    </div>`;
+
+  const reload = () => {
+    state.plFrom = document.getElementById("pl-from").value;
+    state.plTo = document.getElementById("pl-to").value;
+    renderProfitAndLossPage();
+  };
+  document.getElementById("pl-from").addEventListener("change", reload);
+  document.getElementById("pl-to").addEventListener("change", reload);
+}
+
+async function renderBalanceSheetPage() {
+  const params = new URLSearchParams();
+  if (state.bsAsOf) params.set("asOf", state.bsAsOf);
+  const data = await fetchJson(apiUrl(`books/balance-sheet?${params}`));
+  state.bsAsOf = data.asOf;
+
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Accounting</div><h1>Balance sheet</h1></div>
+      <div class="actions">
+        <label class="inline-field">As at <input type="date" id="bs-date" value="${esc(data.asOf)}" /></label>
+        <div class="${data.isBalanced ? "balance-ok" : "balance-bad"}">${data.isBalanced ? "In balance" : "Out of balance"}</div>
+      </div>
+    </div>
+    <div class="card report-card">
+      <table class="data report">
+        ${renderReportSection(data.assets)}
+        ${renderReportSection(data.liabilities)}
+        ${renderReportSection(data.equity)}
+        <tbody>
+          <tr class="grand-total"><td>Total liabilities and equity</td><td class="right">${formatMoney(data.totalLiabilitiesAndEquity)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">Profit is not held on an account: earnings before this financial year show as retained earnings, and this year's result shows on its own line.</p>`;
+
+  document.getElementById("bs-date").addEventListener("change", (event) => {
+    state.bsAsOf = event.target.value;
+    renderBalanceSheetPage();
+  });
+}
+
+// ---------- books: settings ----------
+async function renderBooksSettingsPage() {
+  const { settings } = await fetchJson(apiUrl("books/settings"));
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  mainEl.innerHTML = `
+    <div class="page-head"><div><div class="crumb">Accounting</div><h1>Settings</h1></div></div>
+    <div class="sync-grid">
+      <div class="card">
+        <h3>Financial year</h3>
+        <p class="muted">Sets where the balance sheet splits this year's earnings from retained earnings.</p>
+        <label class="field">Year ends on
+          <select id="fy-month">
+            ${months.map((month, i) => `<option value="${i + 1}" ${settings.financialYearEndMonth === i + 1 ? "selected" : ""}>${month}</option>`).join("")}
+          </select>
+        </label>
+        <label class="field">Day<input id="fy-day" type="number" min="1" max="31" value="${settings.financialYearEndDay}" /></label>
+        <label class="field">Base currency<input id="base-currency" type="text" value="${esc(settings.baseCurrency)}" placeholder="SGD, MYR..." /></label>
+      </div>
+      <div class="card">
+        <h3>Lock date</h3>
+        <p class="muted">Nothing can be posted on or before this date — set it after you file a period so filed numbers cannot move. Leave empty for no lock.</p>
+        <label class="field">Books locked up to<input id="lock-date" type="date" value="${esc(settings.lockDate)}" /></label>
+        <div class="actions"><button class="btn primary" id="save-settings">Save settings</button></div>
+        <p class="muted" id="settings-note"></p>
+      </div>
+    </div>`;
+
+  document.getElementById("save-settings").addEventListener("click", async () => {
+    const res = await fetch(apiUrl("books/settings"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        financialYearEndMonth: Number(document.getElementById("fy-month").value),
+        financialYearEndDay: Number(document.getElementById("fy-day").value),
+        lockDate: document.getElementById("lock-date").value,
+        baseCurrency: document.getElementById("base-currency").value,
+      }),
+    });
+    const data = await res.json();
+    document.getElementById("settings-note").textContent = res.ok ? "Saved." : data.error;
+  });
 }
 
 // ---------- sync page ----------

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { BooksError, loadAccounts, readBooksFile, writeBooksFile, type Account } from "./books";
 import type { XeroRecord } from "./csvTables";
 import { loadDataset } from "./dataStore";
+import { assertNotLocked } from "./settings";
 
 export type SourceType = "manual" | "invoice" | "bill" | "payment";
 
@@ -95,6 +96,7 @@ function buildEntry(input: EntryInput, accountsByCode: Map<string, Account>, ent
 }
 
 export function postEntry(tenantDir: string, input: EntryInput): JournalEntry {
+  assertNotLocked(tenantDir, input.date);
   const accountsByCode = new Map(loadAccounts(tenantDir).map((a) => [a.code.toLowerCase(), a]));
   const entries = loadJournal(tenantDir);
   const entry = buildEntry(input, accountsByCode, entries);
@@ -109,12 +111,15 @@ export function voidEntry(tenantDir: string, id: string): JournalEntry {
   if (!original) throw new BooksError("Journal entry not found.");
   if (original.status === "voided") throw new BooksError(`${original.number} is already voided.`);
 
+  const reversalDate = new Date().toISOString().slice(0, 10);
+  assertNotLocked(tenantDir, reversalDate);
+
   const reversal: JournalEntry = {
     ...original,
     id: randomUUID(),
     number: getNextNumber(entries),
     narration: `Reversal of ${original.number}${original.narration ? ` — ${original.narration}` : ""}`,
-    date: new Date().toISOString().slice(0, 10),
+    date: reversalDate,
     lines: original.lines.map((line) => ({ ...line, debit: line.credit, credit: line.debit })),
     createdAt: new Date().toISOString(),
     sourceKey: "",
@@ -250,7 +255,9 @@ export function importXeroDocuments(tenantDir: string): ImportResult {
         continue;
       }
       try {
-        const entry = buildEntry(document.build(record), ctx.accountsByCode, [...entries, ...added]);
+        const input = document.build(record);
+        assertNotLocked(tenantDir, input.date);
+        const entry = buildEntry(input, ctx.accountsByCode, [...entries, ...added]);
         added.push(entry);
         alreadyPosted.add(key);
         result.posted++;

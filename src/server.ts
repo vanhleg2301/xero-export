@@ -14,6 +14,8 @@ import {
 } from "./dataStore";
 import { BooksError, loadAccounts, seedAccountsFromXero, upsertAccount } from "./books";
 import { getTrialBalance, importXeroDocuments, loadJournal, postEntry, voidEntry } from "./ledger";
+import { getBalanceSheet, getProfitAndLoss } from "./reports";
+import { getFinancialYear, loadSettings, saveSettings } from "./settings";
 import { getConfig, saveCredentials } from "./config";
 import { buildExcelReport } from "./excelReport";
 import { runExport } from "./exporter";
@@ -137,7 +139,7 @@ async function handleAuthCallback(url: URL, res: ServerResponse) {
   redirect(res, "/#/sync");
 }
 
-async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantDir: string, parts: string[]) {
+async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantDir: string, parts: string[], query: URLSearchParams) {
   try {
     if (parts[4] === "journal") {
       if (req.method === "POST" && parts[5] === "import") {
@@ -170,6 +172,31 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
       return sendJson(res, getTrialBalance(tenantDir));
     }
 
+    if (parts[4] === "settings" && parts.length === 5) {
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        return sendJson(res, {
+          settings: saveSettings(tenantDir, {
+            financialYearEndMonth: Number(body.financialYearEndMonth),
+            financialYearEndDay: Number(body.financialYearEndDay),
+            lockDate: String(body.lockDate ?? ""),
+            baseCurrency: String(body.baseCurrency ?? ""),
+          }),
+        });
+      }
+      return sendJson(res, { settings: loadSettings(tenantDir) });
+    }
+
+    if (parts[4] === "profit-and-loss" && parts.length === 5) {
+      const today = new Date().toISOString().slice(0, 10);
+      const financialYear = getFinancialYear(loadSettings(tenantDir), today);
+      return sendJson(res, getProfitAndLoss(tenantDir, query.get("from") || financialYear.start, query.get("to") || today));
+    }
+
+    if (parts[4] === "balance-sheet" && parts.length === 5) {
+      return sendJson(res, getBalanceSheet(tenantDir, query.get("asOf") || new Date().toISOString().slice(0, 10)));
+    }
+
     if (parts[4] !== "accounts") return sendJson(res, { error: "Not found" }, 404);
 
     if (req.method === "POST" && parts[5] === "seed") {
@@ -198,14 +225,14 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
   sendJson(res, { error: "Not found" }, 404);
 }
 
-async function handleTenantApi(req: IncomingMessage, res: ServerResponse, parts: string[]) {
+async function handleTenantApi(req: IncomingMessage, res: ServerResponse, parts: string[], query: URLSearchParams) {
   if (parts.length === 2) return sendJson(res, listDirs(DATA_DIR));
 
   const tenant = parts[2];
   const tenantDir = resolveInside(DATA_DIR, tenant);
   if (!tenantDir || !existsSync(tenantDir)) return sendJson(res, { error: "Not found" }, 404);
 
-  if (parts[3] === "books") return handleBooksApi(req, res, tenantDir, parts);
+  if (parts[3] === "books") return handleBooksApi(req, res, tenantDir, parts, query);
 
   if (parts[3] === "download" && parts.length === 4) {
     return sendZip(res, `${tenant} - All data.zip`, buildZip(tenantDir, VIEWS));
@@ -311,7 +338,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     return sendJson(res, syncJob);
   }
 
-  if (parts[0] === "api" && parts[1] === "tenants") return handleTenantApi(req, res, parts);
+  if (parts[0] === "api" && parts[1] === "tenants") return handleTenantApi(req, res, parts, url.searchParams);
 
   if (parts[0] === "files" && parts[2] === "attachments") {
     const tenantDir = resolveInside(DATA_DIR, parts[1]);

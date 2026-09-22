@@ -148,6 +148,33 @@ a:hover {
   overflow-x: auto;
 }
 
+.report-card { padding: 8px 0; }
+
+table.report { max-width: 720px; }
+table.report td { border-bottom: 0; padding: 6px 20px; }
+table.report tr.section-head td { font-weight: 600; padding-top: 18px; border-bottom: 1px solid var(--border); }
+table.report tr.section-total td { border-top: 1px solid var(--border); font-weight: 600; }
+table.report tr.spacer td { padding: 0; height: 10px; }
+table.report tr.grand-total td { border-top: 2px solid var(--text); font-weight: 700; font-size: 15px; padding-block: 10px; }
+table.report td.right { font-variant-numeric: tabular-nums; }
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inline-field input {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  color: var(--text);
+  background: #fff;
+}
+
 .balance-ok, .balance-bad {
   font-weight: 600;
   border-radius: 999px;

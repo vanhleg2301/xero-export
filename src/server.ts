@@ -12,6 +12,7 @@ import {
   loadRecords,
   type AttachmentFolder,
 } from "./dataStore";
+import { BooksError, loadAccounts, seedAccountsFromXero, upsertAccount } from "./books";
 import { getConfig, saveCredentials } from "./config";
 import { buildExcelReport } from "./excelReport";
 import { runExport } from "./exporter";
@@ -135,12 +136,44 @@ async function handleAuthCallback(url: URL, res: ServerResponse) {
   redirect(res, "/#/sync");
 }
 
-function handleTenantApi(res: ServerResponse, parts: string[]) {
+async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantDir: string, parts: string[]) {
+  if (parts[4] !== "accounts") return sendJson(res, { error: "Not found" }, 404);
+
+  try {
+    if (req.method === "POST" && parts[5] === "seed") {
+      return sendJson(res, { ...seedAccountsFromXero(tenantDir), accounts: loadAccounts(tenantDir) });
+    }
+    if (req.method === "POST" && parts.length === 5) {
+      const body = await readJsonBody(req);
+      const account = upsertAccount(tenantDir, {
+        id: body.id ? String(body.id) : undefined,
+        code: String(body.code ?? ""),
+        name: String(body.name ?? ""),
+        accountClass: String(body.accountClass ?? ""),
+        type: body.type === undefined ? undefined : String(body.type),
+        taxRate: body.taxRate === undefined ? undefined : String(body.taxRate),
+        description: body.description === undefined ? undefined : String(body.description),
+        isActive: body.isActive === undefined ? undefined : Boolean(body.isActive),
+      });
+      return sendJson(res, { account, accounts: loadAccounts(tenantDir) });
+    }
+    if (parts.length === 5) return sendJson(res, { accounts: loadAccounts(tenantDir) });
+  } catch (err) {
+    if (err instanceof BooksError) return sendJson(res, { error: err.message }, 400);
+    throw err;
+  }
+
+  sendJson(res, { error: "Not found" }, 404);
+}
+
+async function handleTenantApi(req: IncomingMessage, res: ServerResponse, parts: string[]) {
   if (parts.length === 2) return sendJson(res, listDirs(DATA_DIR));
 
   const tenant = parts[2];
   const tenantDir = resolveInside(DATA_DIR, tenant);
   if (!tenantDir || !existsSync(tenantDir)) return sendJson(res, { error: "Not found" }, 404);
+
+  if (parts[3] === "books") return handleBooksApi(req, res, tenantDir, parts);
 
   if (parts[3] === "download" && parts.length === 4) {
     return sendZip(res, `${tenant} - All data.zip`, buildZip(tenantDir, VIEWS));
@@ -246,7 +279,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     return sendJson(res, syncJob);
   }
 
-  if (parts[0] === "api" && parts[1] === "tenants") return handleTenantApi(res, parts);
+  if (parts[0] === "api" && parts[1] === "tenants") return handleTenantApi(req, res, parts);
 
   if (parts[0] === "files" && parts[2] === "attachments") {
     const tenantDir = resolveInside(DATA_DIR, parts[1]);

@@ -14,6 +14,9 @@ const state = {
   search: "",
   sort: null,
   visibleRows: [],
+  accounts: [],
+  accountEdit: null,
+  accountFilter: "",
 };
 
 const mainEl = document.getElementById("main");
@@ -131,11 +134,12 @@ function compareValues(a, b) {
 // ---------- navigation ----------
 function renderNav() {
   const nav = document.getElementById("nav");
-  if (state.views.length === 0) {
+  if (!state.tenant) {
     nav.innerHTML = "";
     return;
   }
-  nav.innerHTML = GROUP_ORDER.map((group) => {
+  const booksLink = `<a class="nav-plain ${state.view === null && location.hash === "#/books" ? "active" : ""}" href="#/books">Books</a>`;
+  nav.innerHTML = booksLink + GROUP_ORDER.map((group) => {
     const items = state.views.filter((v) => v.group === group);
     const isActive = state.view?.group === group;
     return `
@@ -154,6 +158,12 @@ async function handleRoute() {
   closeDrawer();
   const route = location.hash.replace(/^#\//, "") || "home";
   document.activeElement?.blur();
+
+  if (route === "books" && state.tenant) {
+    state.view = null;
+    renderNav();
+    return renderBooksPage();
+  }
 
   if (route === "sync" || !state.tenant) {
     state.view = null;
@@ -503,6 +513,143 @@ function renderReportPage() {
   document.getElementById("download-btn").addEventListener("click", () => {
     location.href = apiUrl(`views/${view.id}/download`);
   });
+}
+
+// ---------- books: chart of accounts ----------
+const ACCOUNT_CLASSES = ["asset", "liability", "equity", "revenue", "expense"];
+
+async function renderBooksPage() {
+  const data = await fetchJson(apiUrl("books/accounts"));
+  state.accounts = data.accounts;
+  state.accountEdit = null;
+
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Books</div><h1>Chart of accounts</h1></div>
+      <div class="actions">
+        <button class="btn" id="seed-accounts">Import from Xero data</button>
+        <button class="btn primary" id="new-account">New account</button>
+      </div>
+    </div>
+    <p class="muted">The accounts your own ledger posts to. Imported from the Xero data you synced, then yours to edit — changes here never touch Xero.</p>
+    <div class="card">
+      <div class="toolbar">
+        <input class="search" id="account-search" type="search" placeholder="Search code or name..." />
+        <span class="muted" id="account-count"></span>
+      </div>
+      <div class="table-wrap" id="accounts-table"></div>
+    </div>`;
+
+  document.getElementById("seed-accounts").addEventListener("click", seedAccounts);
+  document.getElementById("new-account").addEventListener("click", () => openAccountForm(null));
+  document.getElementById("account-search").addEventListener("input", (event) => {
+    state.accountFilter = event.target.value;
+    renderAccountsTable();
+  });
+  renderAccountsTable();
+}
+
+async function seedAccounts() {
+  const res = await fetch(apiUrl("books/accounts/seed"), { method: "POST" });
+  const data = await res.json();
+  state.accounts = data.accounts ?? state.accounts;
+  renderAccountsTable();
+  document.getElementById("account-count").textContent =
+    data.added > 0 ? `${data.added} accounts imported` : "Nothing new to import";
+}
+
+function renderAccountsTable() {
+  const needle = state.accountFilter.toLowerCase();
+  const rows = state.accounts.filter(
+    (a) => !needle || `${a.code} ${a.name} ${a.type}`.toLowerCase().includes(needle),
+  );
+  const area = document.getElementById("accounts-table");
+  const countEl = document.getElementById("account-count");
+  if (countEl) countEl.textContent = `${rows.length} accounts`;
+
+  if (rows.length === 0) {
+    area.innerHTML = `<div class="empty-state">${
+      state.accounts.length === 0
+        ? 'No accounts yet. Click "Import from Xero data" to start from the accounts you synced.'
+        : "No account matches that search."
+    }</div>`;
+    return;
+  }
+
+  area.innerHTML = `
+    <table class="data">
+      <thead><tr><th>Code</th><th>Name</th><th>Class</th><th>Type</th><th>Tax rate</th><th>Status</th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (a) => `<tr data-id="${esc(a.id)}">
+              <td>${esc(a.code)}</td>
+              <td>${esc(a.name)}${a.description ? `<div class="muted">${esc(a.description)}</div>` : ""}</td>
+              <td>${esc(a.accountClass)}</td>
+              <td>${esc(a.type)}</td>
+              <td>${esc(a.taxRate)}</td>
+              <td>${a.isActive ? '<span class="badge active">Active</span>' : '<span class="badge archived">Archived</span>'}</td>
+            </tr>`,
+          )
+          .join("")}
+      </tbody>
+    </table>`;
+
+  area.querySelectorAll("tbody tr").forEach((tr) =>
+    tr.addEventListener("click", () => openAccountForm(state.accounts.find((a) => a.id === tr.dataset.id))),
+  );
+}
+
+function openAccountForm(account) {
+  state.accountEdit = account ?? null;
+  document.getElementById("drawer-crumb").textContent = "Books › Chart of accounts";
+  document.getElementById("drawer-title").textContent = account ? `${account.code} ${account.name}` : "New account";
+  document.getElementById("drawer-body").innerHTML = `
+    <label class="field">Code<input id="acc-code" type="text" value="${esc(account?.code ?? "")}" /></label>
+    <label class="field">Name<input id="acc-name" type="text" value="${esc(account?.name ?? "")}" /></label>
+    <label class="field">Class
+      <select id="acc-class">
+        ${ACCOUNT_CLASSES.map(
+          (c) => `<option value="${c}" ${account?.accountClass === c ? "selected" : ""}>${c}</option>`,
+        ).join("")}
+      </select>
+    </label>
+    <label class="field">Type<input id="acc-type" type="text" value="${esc(account?.type ?? "")}" placeholder="Current Asset, Expense, Bank..." /></label>
+    <label class="field">Tax rate<input id="acc-tax" type="text" value="${esc(account?.taxRate ?? "")}" /></label>
+    <label class="field">Description<input id="acc-desc" type="text" value="${esc(account?.description ?? "")}" /></label>
+    <label class="check"><input id="acc-active" type="checkbox" ${account?.isActive !== false ? "checked" : ""} /><span>Active</span></label>
+    <div class="actions"><button class="btn primary" id="acc-save">Save</button></div>
+    <p class="muted" id="acc-error"></p>`;
+
+  document.getElementById("acc-save").addEventListener("click", saveAccount);
+  drawerEl.hidden = false;
+  backdropEl.hidden = false;
+}
+
+async function saveAccount() {
+  const payload = {
+    id: state.accountEdit?.id,
+    code: document.getElementById("acc-code").value,
+    name: document.getElementById("acc-name").value,
+    accountClass: document.getElementById("acc-class").value,
+    type: document.getElementById("acc-type").value,
+    taxRate: document.getElementById("acc-tax").value,
+    description: document.getElementById("acc-desc").value,
+    isActive: document.getElementById("acc-active").checked,
+  };
+  const res = await fetch(apiUrl("books/accounts"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    document.getElementById("acc-error").textContent = data.error;
+    return;
+  }
+  state.accounts = data.accounts;
+  closeDrawer();
+  renderAccountsTable();
 }
 
 // ---------- sync page ----------

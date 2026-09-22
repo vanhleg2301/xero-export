@@ -116,6 +116,36 @@ a:hover {
   border-bottom-color: var(--cyan);
 }
 
+.nav-plain {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 14px;
+  color: #d8e6f3;
+  border-bottom: 3px solid transparent;
+}
+
+.nav-plain:hover,
+.nav-plain.active {
+  color: #fff;
+  text-decoration: none;
+  border-bottom-color: var(--cyan);
+}
+
+.field select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  color: var(--text);
+  background: #fff;
+}
+
+.badge.archived { background: #eceff3; color: #56626e; }
+
 .nav-menu {
   display: none;
   position: absolute;

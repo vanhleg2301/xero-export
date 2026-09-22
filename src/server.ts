@@ -16,6 +16,17 @@ import { BooksError, loadAccounts, seedAccountsFromXero, upsertAccount } from ".
 import { getTrialBalance, importXeroDocuments, loadJournal, postEntry, voidEntry } from "./ledger";
 import { getBalanceSheet, getProfitAndLoss } from "./reports";
 import { getFinancialYear, loadSettings, saveSettings } from "./settings";
+import {
+  addStatementLine,
+  createFromLine,
+  getBankAccounts,
+  getBankSummary,
+  getSuggestions,
+  importStatementCsv,
+  loadStatementLines,
+  matchLine,
+  unmatchLine,
+} from "./bank";
 import { getConfig, saveCredentials } from "./config";
 import { buildExcelReport } from "./excelReport";
 import { runExport } from "./exporter";
@@ -168,6 +179,54 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
       if (parts.length === 5) return sendJson(res, { entries: loadJournal(tenantDir) });
     }
 
+    if (parts[4] === "bank") {
+      if (parts.length === 5) {
+        const accounts = getBankAccounts(tenantDir);
+        const selected = query.get("account") || accounts[0]?.code || "";
+        const lines = loadStatementLines(tenantDir).filter((line) => line.bankAccountCode === selected);
+        return sendJson(res, {
+          accounts,
+          selected,
+          summary: selected ? getBankSummary(tenantDir, selected) : null,
+          lines: lines.map((line) => ({
+            ...line,
+            suggestions: line.status === "unreconciled" ? getSuggestions(tenantDir, line) : [],
+          })),
+        });
+      }
+
+      if (req.method === "POST" && parts[5] === "import") {
+        const body = await readJsonBody(req);
+        return sendJson(res, importStatementCsv(tenantDir, String(body.bankAccountCode ?? ""), String(body.csv ?? "")));
+      }
+
+      if (req.method === "POST" && parts[5] === "lines" && parts.length === 6) {
+        const body = await readJsonBody(req);
+        return sendJson(res, {
+          line: addStatementLine(tenantDir, {
+            bankAccountCode: String(body.bankAccountCode ?? ""),
+            date: String(body.date ?? ""),
+            description: String(body.description ?? ""),
+            reference: String(body.reference ?? ""),
+            amount: Number(body.amount ?? 0),
+          }),
+        });
+      }
+
+      if (req.method === "POST" && parts[5] === "lines" && parts.length === 8) {
+        const id = parts[6];
+        const action = parts[7];
+        const body = action === "match" || action === "create" ? await readJsonBody(req) : {};
+        if (action === "match") return sendJson(res, { line: matchLine(tenantDir, id, String(body.journalEntryId ?? "")) });
+        if (action === "create") {
+          return sendJson(res, {
+            line: createFromLine(tenantDir, id, String(body.accountCode ?? ""), String(body.description ?? "")),
+          });
+        }
+        if (action === "unmatch") return sendJson(res, { line: unmatchLine(tenantDir, id) });
+      }
+    }
+
     if (parts[4] === "trial-balance" && parts.length === 5) {
       return sendJson(res, getTrialBalance(tenantDir));
     }
@@ -213,6 +272,7 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
         taxRate: body.taxRate === undefined ? undefined : String(body.taxRate),
         description: body.description === undefined ? undefined : String(body.description),
         isActive: body.isActive === undefined ? undefined : Boolean(body.isActive),
+        isBankAccount: body.isBankAccount === undefined ? undefined : Boolean(body.isBankAccount),
       });
       return sendJson(res, { account, accounts: loadAccounts(tenantDir) });
     }

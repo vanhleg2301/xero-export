@@ -148,6 +148,17 @@ a:hover {
   overflow-x: auto;
 }
 
+.btn.small { padding: 4px 10px; font-size: 12px; }
+
+.inline-field select {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  color: var(--text);
+  background: #fff;
+}
+
 .report-card { padding: 8px 0; }
 
 table.report { max-width: 720px; }

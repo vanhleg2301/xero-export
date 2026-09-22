@@ -16,6 +16,7 @@ export interface Account {
   taxRate: string;
   description: string;
   isActive: boolean;
+  isBankAccount?: boolean;
   systemAccount?: string;
   xeroAccountId?: string;
 }
@@ -103,6 +104,7 @@ export function seedAccountsFromXero(tenantDir: string): { added: number; kept: 
       taxRate: asString(record.TaxType),
       description: asString(record.Description),
       isActive: asString(record.Status) !== "ARCHIVED",
+      isBankAccount: asString(record.Type) === "BANK" || undefined,
       systemAccount: asString(record.SystemAccount) || undefined,
       xeroAccountId: asString(record.AccountID) || undefined,
     });
@@ -121,6 +123,7 @@ export interface AccountInput {
   taxRate?: string;
   description?: string;
   isActive?: boolean;
+  isBankAccount?: boolean;
 }
 
 export function upsertAccount(tenantDir: string, input: AccountInput): Account {
@@ -148,6 +151,7 @@ export function upsertAccount(tenantDir: string, input: AccountInput): Account {
     taxRate: (input.taxRate ?? existing?.taxRate ?? "").trim(),
     description: (input.description ?? existing?.description ?? "").trim(),
     isActive: input.isActive ?? existing?.isActive ?? true,
+    isBankAccount: input.isBankAccount ?? existing?.isBankAccount,
     systemAccount: existing?.systemAccount,
     xeroAccountId: existing?.xeroAccountId,
   };

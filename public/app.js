@@ -22,6 +22,8 @@ const state = {
   plFrom: "",
   plTo: "",
   bsAsOf: "",
+  bankAccount: "",
+  bankData: null,
 };
 
 const mainEl = document.getElementById("main");
@@ -139,6 +141,7 @@ function compareValues(a, b) {
 // ---------- navigation ----------
 const BOOKS_PAGES = [
   { id: "journal", label: "Journal" },
+  { id: "bank", label: "Bank" },
   { id: "trial-balance", label: "Trial balance" },
   { id: "profit-and-loss", label: "Profit & loss" },
   { id: "balance-sheet", label: "Balance sheet" },
@@ -195,6 +198,7 @@ async function handleRoute() {
   if (route.area === "books" && state.tenant) {
     state.view = null;
     renderNav();
+    if (route.page === "bank") return renderBankPage();
     if (route.page === "accounts") return renderAccountsPage();
     if (route.page === "trial-balance") return renderTrialBalancePage();
     if (route.page === "profit-and-loss") return renderProfitAndLossPage();
@@ -656,6 +660,7 @@ function openAccountForm(account) {
     <label class="field">Tax rate<input id="acc-tax" type="text" value="${esc(account?.taxRate ?? "")}" /></label>
     <label class="field">Description<input id="acc-desc" type="text" value="${esc(account?.description ?? "")}" /></label>
     <label class="check"><input id="acc-active" type="checkbox" ${account?.isActive !== false ? "checked" : ""} /><span>Active</span></label>
+    <label class="check"><input id="acc-bank" type="checkbox" ${account?.isBankAccount ? "checked" : ""} /><span>Bank account<small>Statement lines can be imported against it.</small></span></label>
     <div class="actions"><button class="btn primary" id="acc-save">Save</button></div>
     <p class="muted" id="acc-error"></p>`;
 
@@ -674,6 +679,7 @@ async function saveAccount() {
     taxRate: document.getElementById("acc-tax").value,
     description: document.getElementById("acc-desc").value,
     isActive: document.getElementById("acc-active").checked,
+    isBankAccount: document.getElementById("acc-bank").checked,
   };
   const res = await fetch(apiUrl("books/accounts"), {
     method: "POST",
@@ -960,6 +966,242 @@ async function renderTrialBalancePage() {
         }
       </div>
     </div>`;
+}
+
+// ---------- books: bank reconciliation ----------
+async function renderBankPage() {
+  const params = new URLSearchParams();
+  if (state.bankAccount) params.set("account", state.bankAccount);
+  const data = await fetchJson(apiUrl(`books/bank?${params}`));
+  state.bankData = data;
+  state.bankAccount = data.selected;
+
+  if (data.accounts.length === 0) {
+    mainEl.innerHTML = `
+      <div class="page-head"><div><div class="crumb">Accounting</div><h1>Bank</h1></div></div>
+      <div class="card"><div class="empty-state">
+        No bank account yet. Open <a href="#/books/accounts">Chart of accounts</a>, edit the account your bank statement belongs to, and tick "Bank account".
+      </div></div>`;
+    return;
+  }
+
+  const summary = data.summary;
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Accounting</div><h1>Bank</h1></div>
+      <div class="actions">
+        <label class="inline-field">Account
+          <select id="bank-account">
+            ${data.accounts.map((a) => `<option value="${esc(a.code)}" ${a.code === data.selected ? "selected" : ""}>${esc(a.code)} — ${esc(a.name)}</option>`).join("")}
+          </select>
+        </label>
+        <button class="btn" id="add-line">Add line</button>
+        <button class="btn primary" id="import-statement">Import statement (.csv)</button>
+        <input type="file" id="statement-file" accept=".csv,text/csv" hidden />
+      </div>
+    </div>
+    <div class="summary">
+      <div class="card"><div class="muted">Statement balance</div><div class="big">${formatMoney(summary.statementBalance)}</div>
+        <span class="muted">Sum of imported lines</span></div>
+      <div class="card"><div class="muted">Ledger balance</div><div class="big">${formatMoney(summary.ledgerBalance)}</div>
+        <span class="muted">What the journal says</span></div>
+      <div class="card"><div class="muted">Left to reconcile</div><div class="big">${summary.unreconciledCount}</div>
+        <span class="${Math.abs(summary.difference) < 0.005 ? "good" : "muted"}">Difference ${formatMoney(summary.difference)}</span></div>
+    </div>
+    <div class="card"><div class="table-wrap" id="bank-table"></div></div>
+    <p class="muted" id="bank-note"></p>`;
+
+  document.getElementById("bank-account").addEventListener("change", (event) => {
+    state.bankAccount = event.target.value;
+    renderBankPage();
+  });
+  document.getElementById("import-statement").addEventListener("click", () => document.getElementById("statement-file").click());
+  document.getElementById("statement-file").addEventListener("change", importStatement);
+  document.getElementById("add-line").addEventListener("click", openStatementLineForm);
+  renderBankTable();
+}
+
+function renderBankTable() {
+  const area = document.getElementById("bank-table");
+  const lines = state.bankData.lines;
+  if (lines.length === 0) {
+    area.innerHTML = `<div class="empty-state">No statement lines yet. Import a CSV from your bank, or add a line by hand to try it out.</div>`;
+    return;
+  }
+
+  area.innerHTML = `
+    <table class="data">
+      <thead><tr><th>Date</th><th>Description</th><th class="right">Money in</th><th class="right">Money out</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        ${lines
+          .map(
+            (line) => `<tr>
+              <td>${esc(formatDate(line.date))}</td>
+              <td>${esc(line.description)}${line.reference ? `<div class="muted">${esc(line.reference)}</div>` : ""}</td>
+              <td class="right">${line.amount > 0 ? formatMoney(line.amount) : ""}</td>
+              <td class="right">${line.amount < 0 ? formatMoney(-line.amount) : ""}</td>
+              <td>${line.status === "reconciled" ? '<span class="badge paid">Reconciled</span>' : '<span class="badge draft">To do</span>'}</td>
+              <td class="right">${
+                line.status === "reconciled"
+                  ? `<button class="btn small" data-unmatch="${esc(line.id)}">Undo</button>`
+                  : `${line.suggestions
+                      .slice(0, 1)
+                      .map(
+                        (s) => `<button class="btn small primary" data-match="${esc(line.id)}" data-entry="${esc(s.entryId)}">Match ${esc(s.number)}</button>`,
+                      )
+                      .join("")}
+                     <button class="btn small" data-code="${esc(line.id)}">Code it</button>`
+              }</td>
+            </tr>`,
+          )
+          .join("")}
+      </tbody>
+    </table>`;
+
+  area.querySelectorAll("[data-match]").forEach((button) =>
+    button.addEventListener("click", () => postBankAction(`lines/${button.dataset.match}/match`, { journalEntryId: button.dataset.entry })),
+  );
+  area.querySelectorAll("[data-unmatch]").forEach((button) =>
+    button.addEventListener("click", () => postBankAction(`lines/${button.dataset.unmatch}/unmatch`, {})),
+  );
+  area.querySelectorAll("[data-code]").forEach((button) =>
+    button.addEventListener("click", () => openCodeLineForm(state.bankData.lines.find((l) => l.id === button.dataset.code))),
+  );
+}
+
+async function postBankAction(path, body) {
+  const res = await fetch(apiUrl(`books/bank/${path}`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    document.getElementById("bank-note").textContent = data.error;
+    return false;
+  }
+  await renderBankPage();
+  return true;
+}
+
+async function importStatement(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const csv = await file.text();
+  const res = await fetch(apiUrl("books/bank/import"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bankAccountCode: state.bankAccount, csv }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    document.getElementById("bank-note").textContent = data.error;
+    return;
+  }
+  await renderBankPage();
+  document.getElementById("bank-note").textContent = `${data.added} lines imported, ${data.skipped} skipped`;
+}
+
+function openStatementLineForm() {
+  document.getElementById("drawer-crumb").textContent = "Accounting › Bank";
+  document.getElementById("drawer-title").textContent = "Add statement line";
+  document.getElementById("drawer-body").innerHTML = `
+    <label class="field">Date<input id="sl-date" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
+    <label class="field">Description<input id="sl-desc" type="text" /></label>
+    <label class="field">Reference<input id="sl-ref" type="text" /></label>
+    <label class="field">Amount<input id="sl-amount" type="number" step="0.01" placeholder="Minus for money out" /></label>
+    <div class="actions"><button class="btn primary" id="sl-save">Add line</button></div>
+    <p class="muted" id="sl-note"></p>`;
+
+  document.getElementById("sl-save").addEventListener("click", async () => {
+    const res = await fetch(apiUrl("books/bank/lines"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bankAccountCode: state.bankAccount,
+        date: document.getElementById("sl-date").value,
+        description: document.getElementById("sl-desc").value,
+        reference: document.getElementById("sl-ref").value,
+        amount: Number(document.getElementById("sl-amount").value),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      document.getElementById("sl-note").textContent = data.error;
+      return;
+    }
+    closeDrawer();
+    renderBankPage();
+  });
+
+  drawerEl.hidden = false;
+  backdropEl.hidden = false;
+}
+
+async function openCodeLineForm(line) {
+  if (state.accounts.length === 0) state.accounts = (await fetchJson(apiUrl("books/accounts"))).accounts;
+  const isMoneyIn = line.amount > 0;
+
+  document.getElementById("drawer-crumb").textContent = "Accounting › Bank";
+  document.getElementById("drawer-title").textContent = line.description || "Statement line";
+  document.getElementById("drawer-body").innerHTML = `
+    ${renderMeta([
+      ["Date", esc(formatDate(line.date))],
+      [isMoneyIn ? "Money in" : "Money out", formatMoney(Math.abs(line.amount))],
+      ["Reference", esc(line.reference)],
+    ])}
+    ${
+      line.suggestions.length > 0
+        ? `<h3>Suggested matches</h3>
+           <table class="lines"><tbody>${line.suggestions
+             .map(
+               (s) => `<tr>
+                 <td>${esc(s.number)} · ${esc(formatDate(s.date))}<div class="muted">${esc(s.narration)}</div></td>
+                 <td class="right">${formatMoney(s.amount)}</td>
+                 <td class="right"><button class="btn small primary" data-match-entry="${esc(s.entryId)}">Match</button></td>
+               </tr>`,
+             )
+             .join("")}</tbody></table>`
+        : ""
+    }
+    <h3>Or code it to an account</h3>
+    <p class="muted">Posts ${isMoneyIn ? "a debit to the bank and a credit to" : "a credit to the bank and a debit to"} the account you pick, then marks the line reconciled.</p>
+    <label class="field">Account
+      <select id="code-account">
+        <option value="">Select…</option>
+        ${state.accounts.filter((a) => a.isActive && a.code !== line.bankAccountCode).map((a) => `<option value="${esc(a.code)}">${esc(a.code)} — ${esc(a.name)}</option>`).join("")}
+      </select>
+    </label>
+    <label class="field">Description<input id="code-desc" type="text" value="${esc(line.description)}" /></label>
+    <div class="actions"><button class="btn primary" id="code-save">Post and reconcile</button></div>
+    <p class="muted" id="code-note"></p>`;
+
+  document.querySelectorAll("[data-match-entry]").forEach((button) =>
+    button.addEventListener("click", async () => {
+      if (await postBankAction(`lines/${line.id}/match`, { journalEntryId: button.dataset.matchEntry })) closeDrawer();
+    }),
+  );
+
+  document.getElementById("code-save").addEventListener("click", async () => {
+    const res = await fetch(apiUrl(`books/bank/lines/${line.id}/create`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accountCode: document.getElementById("code-account").value,
+        description: document.getElementById("code-desc").value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      document.getElementById("code-note").textContent = data.error;
+      return;
+    }
+    closeDrawer();
+    renderBankPage();
+  });
+
+  drawerEl.hidden = false;
+  backdropEl.hidden = false;
 }
 
 // ---------- books: financial reports ----------

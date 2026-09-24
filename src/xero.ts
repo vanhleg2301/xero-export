@@ -5,7 +5,10 @@ const AUTHORIZE_URL = "https://login.xero.com/identity/connect/authorize";
 const TOKEN_URL = "https://identity.xero.com/connect/token";
 export const API_BASE = "https://api.xero.com/api.xro/2.0";
 const TOKEN_FILE = "tokens.json";
-const CALL_INTERVAL_MS = 1100;
+// Xero allows 60 calls a minute and 5 concurrent calls per organisation. Staying just under
+// both is far faster than sleeping between calls, which also paid for every round trip.
+const MAX_CALLS_PER_MINUTE = 55;
+const MAX_CONCURRENT_CALLS = 4;
 const REFRESH_TOKEN_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000;
 
 export interface XeroConnection {
@@ -107,19 +110,66 @@ async function refreshTokens(current: StoredTokens): Promise<StoredTokens> {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+class RateLimiter {
+  private readonly callTimes: number[] = [];
+  private active = 0;
+  private readonly waiting: (() => void)[] = [];
+
+  async acquire() {
+    if (this.active >= MAX_CONCURRENT_CALLS) await new Promise<void>((resolve) => this.waiting.push(resolve));
+    this.active++;
+
+    for (;;) {
+      const now = Date.now();
+      while (this.callTimes.length > 0 && now - this.callTimes[0] >= 60_000) this.callTimes.shift();
+      if (this.callTimes.length < MAX_CALLS_PER_MINUTE) break;
+      await sleep(60_000 - (now - this.callTimes[0]) + 50);
+    }
+    this.callTimes.push(Date.now());
+  }
+
+  release() {
+    this.active--;
+    this.waiting.shift()?.();
+  }
+
+  // After a 429 the whole minute is spent: forget the window so we restart cleanly.
+  reset() {
+    this.callTimes.length = 0;
+  }
+}
+
 export type XeroClient = ReturnType<typeof createXeroClient>;
 
 export function createXeroClient(log: (message: string) => void) {
   let tokens = loadTokens();
+  let refreshing: Promise<StoredTokens> | undefined;
+  const limiter = new RateLimiter();
+
+  // Concurrent calls must not each kick off their own refresh.
+  async function getAccessToken(): Promise<string> {
+    if (Date.now() > tokens.expires_at - 60_000) {
+      refreshing ??= refreshTokens(tokens).finally(() => {
+        refreshing = undefined;
+      });
+      tokens = await refreshing;
+    }
+    return tokens.access_token;
+  }
 
   async function request(url: string, tenantId: string, accept = "application/json"): Promise<Response> {
     let hasRetriedAuth = false;
     for (;;) {
-      if (Date.now() > tokens.expires_at - 60_000) tokens = await refreshTokens(tokens);
-
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${tokens.access_token}`, "xero-tenant-id": tenantId, Accept: accept },
-      });
+      const accessToken = await getAccessToken();
+      await limiter.acquire();
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          headers: { Authorization: `Bearer ${accessToken}`, "xero-tenant-id": tenantId, Accept: accept },
+        });
+      } finally {
+        limiter.release();
+      }
 
       if (res.status === 429) {
         if (res.headers.get("X-Rate-Limit-Problem") === "day") {
@@ -128,16 +178,16 @@ export function createXeroClient(log: (message: string) => void) {
         const waitSeconds = Number(res.headers.get("Retry-After") ?? 60);
         log(`  Xero rate limit — waiting ${waitSeconds}s`);
         await sleep(waitSeconds * 1000);
+        limiter.reset();
         continue;
       }
 
       if (res.status === 401 && !hasRetriedAuth) {
         hasRetriedAuth = true;
-        tokens = await refreshTokens(tokens);
+        tokens.expires_at = 0;
         continue;
       }
 
-      await sleep(CALL_INTERVAL_MS);
       if (!res.ok) throw new Error(`${res.status} ${url}: ${(await res.text()).slice(0, 500)}`);
       return res;
     }

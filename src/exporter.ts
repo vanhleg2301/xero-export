@@ -56,6 +56,17 @@ const ENDPOINTS: EndpointSpec[] = [
 
 const toSafeName = (name: string) => name.replace(/[<>:"/\\|?*]+/g, "_").trim();
 
+const ATTACHMENT_CONCURRENCY = 4;
+
+// Runs `work` over the list a few items at a time; the client's rate limiter does the pacing.
+async function forEachConcurrently<T>(items: T[], limit: number, work: (item: T, index: number) => Promise<void>) {
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (let index = next++; index < items.length; index = next++) await work(items[index], index);
+  });
+  await Promise.all(runners);
+}
+
 async function getRecords(ctx: ExportContext, tenantId: string, spec: EndpointSpec, params: Record<string, string>) {
   const query = new URLSearchParams({ ...spec.query, ...params });
   const res = await ctx.client.request(`${API_BASE}/${spec.path}?${query}`, tenantId);
@@ -98,16 +109,18 @@ async function downloadAttachments(ctx: ExportContext, tenantId: string, tenantD
   const withAttachments = records.filter((r) => r.HasAttachments === true);
   if (withAttachments.length === 0) return;
 
-  let index = 0;
-  for (const record of withAttachments) {
-    index++;
+  let done = 0;
+  await forEachConcurrently(withAttachments, ATTACHMENT_CONCURRENCY, async (record) => {
     const id = String(record[idField]);
     const label = spec.attachmentLabelField ? String(record[spec.attachmentLabelField] ?? "") : "";
     const folderName = label ? `${toSafeName(label)}_${id.slice(0, 8)}` : id;
     const group = spec.path === "Invoices" && record.Type === "ACCPAY" ? "Bills" : spec.path;
     const dir = join(tenantDir, "attachments", group, folderName);
     const doneMarker = join(dir, ".done");
-    if (existsSync(doneMarker)) continue;
+    if (existsSync(doneMarker)) {
+      done++;
+      return;
+    }
 
     const res = await ctx.client.request(`${API_BASE}/${spec.path}/${id}/Attachments`, tenantId);
     const { Attachments = [] } = (await res.json()) as {
@@ -115,13 +128,16 @@ async function downloadAttachments(ctx: ExportContext, tenantId: string, tenantD
     };
 
     mkdirSync(dir, { recursive: true });
-    for (const attachment of Attachments) {
-      const fileRes = await ctx.client.request(attachment.Url, tenantId, attachment.MimeType);
-      writeFileSync(join(dir, toSafeName(attachment.FileName)), Buffer.from(await fileRes.arrayBuffer()));
-    }
+    await Promise.all(
+      Attachments.map(async (attachment) => {
+        const fileRes = await ctx.client.request(attachment.Url, tenantId, attachment.MimeType);
+        writeFileSync(join(dir, toSafeName(attachment.FileName)), Buffer.from(await fileRes.arrayBuffer()));
+      }),
+    );
     writeFileSync(doneMarker, "");
-    ctx.log(`  Attachments ${group}: ${index}/${withAttachments.length} — ${label || id} (${Attachments.length} file(s))`);
-  }
+    done++;
+    ctx.log(`  Attachments ${group}: ${done}/${withAttachments.length} — ${label || id} (${Attachments.length} file(s))`);
+  });
 }
 
 async function exportTenant(ctx: ExportContext, tenantId: string, tenantName: string) {

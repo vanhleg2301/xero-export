@@ -110,6 +110,8 @@ async function downloadAttachments(ctx: ExportContext, tenantId: string, tenantD
   if (withAttachments.length === 0) return;
 
   let done = 0;
+  let failed = 0;
+
   await forEachConcurrently(withAttachments, ATTACHMENT_CONCURRENCY, async (record) => {
     const id = String(record[idField]);
     const label = spec.attachmentLabelField ? String(record[spec.attachmentLabelField] ?? "") : "";
@@ -122,22 +124,48 @@ async function downloadAttachments(ctx: ExportContext, tenantId: string, tenantD
       return;
     }
 
-    const res = await ctx.client.request(`${API_BASE}/${spec.path}/${id}/Attachments`, tenantId);
-    const { Attachments = [] } = (await res.json()) as {
-      Attachments?: { FileName: string; Url: string; MimeType: string }[];
-    };
+    try {
+      const res = await ctx.client.request(`${API_BASE}/${spec.path}/${id}/Attachments`, tenantId);
+      const { Attachments = [] } = (await res.json()) as {
+        Attachments?: { AttachmentID?: string; FileName: string; Url: string; MimeType: string }[];
+      };
 
-    mkdirSync(dir, { recursive: true });
-    await Promise.all(
-      Attachments.map(async (attachment) => {
-        const fileRes = await ctx.client.request(attachment.Url, tenantId, attachment.MimeType);
-        writeFileSync(join(dir, toSafeName(attachment.FileName)), Buffer.from(await fileRes.arrayBuffer()));
-      }),
-    );
-    writeFileSync(doneMarker, "");
-    done++;
-    ctx.log(`  Attachments ${group}: ${done}/${withAttachments.length} — ${label || id} (${Attachments.length} file(s))`);
+      mkdirSync(dir, { recursive: true });
+      const results = await Promise.all(
+        Attachments.map(async (attachment) => {
+          // Fetching by AttachmentID avoids file names Xero cannot resolve back (+, #, duplicates).
+          const url = attachment.AttachmentID
+            ? `${API_BASE}/${spec.path}/${id}/Attachments/${attachment.AttachmentID}`
+            : attachment.Url;
+          try {
+            const fileRes = await ctx.client.request(url, tenantId, attachment.MimeType);
+            writeFileSync(join(dir, toSafeName(attachment.FileName)), Buffer.from(await fileRes.arrayBuffer()));
+            return true;
+          } catch (err) {
+            ctx.log(`  Could not download "${attachment.FileName}" on ${label || id}: ${(err as Error).message.slice(0, 120)}`);
+            return false;
+          }
+        }),
+      );
+
+      // Only mark the record finished when every file arrived, so a later run retries the rest.
+      if (results.every(Boolean)) {
+        writeFileSync(doneMarker, "");
+        done++;
+        ctx.log(`  Attachments ${group}: ${done}/${withAttachments.length} — ${label || id} (${Attachments.length} file(s))`);
+      } else {
+        failed++;
+      }
+    } catch (err) {
+      if (err instanceof DailyLimitError) throw err;
+      failed++;
+      ctx.log(`  Could not read attachments on ${label || id}: ${(err as Error).message.slice(0, 120)}`);
+    }
   });
+
+  if (failed > 0) {
+    ctx.log(`  ${failed} record(s) with attachments left for the next run.`);
+  }
 }
 
 async function exportTenant(ctx: ExportContext, tenantId: string, tenantName: string) {

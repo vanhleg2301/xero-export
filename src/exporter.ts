@@ -142,6 +142,7 @@ async function downloadAttachments(ctx: ExportContext, tenantId: string, tenantD
             writeFileSync(join(dir, toSafeName(attachment.FileName)), Buffer.from(await fileRes.arrayBuffer()));
             return true;
           } catch (err) {
+            if (err instanceof DailyLimitError) throw err;
             ctx.log(`  Could not download "${attachment.FileName}" on ${label || id}: ${(err as Error).message.slice(0, 120)}`);
             return false;
           }

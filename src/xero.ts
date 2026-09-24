@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { getConfig } from "./config";
+import { DAILY_CALL_LIMIT, flushUsage, recordCall } from "./usage";
 
 const AUTHORIZE_URL = "https://login.xero.com/identity/connect/authorize";
 const TOKEN_URL = "https://identity.xero.com/connect/token";
@@ -7,7 +8,8 @@ export const API_BASE = "https://api.xero.com/api.xro/2.0";
 const TOKEN_FILE = "tokens.json";
 // Xero allows 60 calls a minute and 5 concurrent calls per organisation. Staying just under
 // both is far faster than sleeping between calls, which also paid for every round trip.
-const MAX_CALLS_PER_MINUTE = 55;
+const MAX_CALLS_PER_MINUTE = 45;
+const LOG_USAGE_EVERY = 100;
 const MAX_CONCURRENT_CALLS = 4;
 const REFRESH_TOKEN_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000;
 
@@ -171,9 +173,18 @@ export function createXeroClient(log: (message: string) => void) {
         limiter.release();
       }
 
+      const usage = recordCall(tenantId, res.status === 429);
+      if (usage.calls % LOG_USAGE_EVERY === 0) {
+        log(`  ${usage.calls.toLocaleString("en-GB")} of ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} Xero calls used today`);
+      }
+
       if (res.status === 429) {
         if (res.headers.get("X-Rate-Limit-Problem") === "day") {
-          throw new DailyLimitError("Hit Xero limit of 5,000 calls per day. Sync again tomorrow; everything already downloaded is kept.");
+          flushUsage();
+          throw new DailyLimitError(
+            `Hit Xero limit of ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} calls per day (${usage.calls.toLocaleString("en-GB")} used, ${usage.rateLimited} of them rate-limited). ` +
+              "Sync again tomorrow; everything already downloaded is kept.",
+          );
         }
         const waitSeconds = Number(res.headers.get("Retry-After") ?? 60);
         log(`  Xero rate limit — waiting ${waitSeconds}s`);

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DAILY_CALL_LIMIT, flushUsage, getUsage } from "./usage";
 import { API_BASE, createXeroClient, DailyLimitError, type XeroClient } from "./xero";
 
 type XeroRecord = Record<string, unknown>;
@@ -210,9 +211,16 @@ async function exportTenant(ctx: ExportContext, tenantId: string, tenantName: st
 
 export async function runExport(options: ExportOptions) {
   const ctx: ExportContext = { ...options, client: createXeroClient(options.log) };
-  for (const { tenantId, tenantName } of ctx.client.connections) {
-    options.log(`=== ${tenantName} ===`);
-    await exportTenant(ctx, tenantId, tenantName);
+  try {
+    for (const { tenantId, tenantName } of ctx.client.connections) {
+      const used = getUsage(tenantId).calls;
+      options.log(`=== ${tenantName} === (${used.toLocaleString("en-GB")} of ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} calls used today)`);
+      await exportTenant(ctx, tenantId, tenantName);
+      const after = getUsage(tenantId);
+      options.log(`  ${after.calls.toLocaleString("en-GB")} calls used today, ${DAILY_CALL_LIMIT - after.calls} left`);
+    }
+    options.log("Sync finished.");
+  } finally {
+    flushUsage();
   }
-  options.log("Sync finished.");
 }

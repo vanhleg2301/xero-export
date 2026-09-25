@@ -12,8 +12,10 @@ const MAX_CALLS_PER_MINUTE = 45;
 const LOG_USAGE_EVERY = 100;
 // Xero frees the daily budget as a rolling 24-hour window, so waiting a while always
 // releases some quota. Retry-After tells us how long; these bound a silly value.
+// Quota comes back gradually rather than all at once, so checking every few minutes makes
+// steady progress; Retry-After can say an hour, which would waste that whole hour.
 const MIN_QUOTA_WAIT_SECONDS = 60;
-const MAX_QUOTA_WAIT_SECONDS = 3600;
+const MAX_QUOTA_WAIT_SECONDS = 300;
 const MAX_CONCURRENT_CALLS = 4;
 const REFRESH_TOKEN_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000;
 
@@ -150,6 +152,7 @@ export type XeroClient = ReturnType<typeof createXeroClient>;
 export function createXeroClient(log: (message: string) => void, shouldWaitForQuota = true) {
   let tokens = loadTokens();
   let refreshing: Promise<StoredTokens> | undefined;
+  let quotaPause: Promise<void> | undefined;
   const limiter = new RateLimiter();
 
   // Concurrent calls must not each kick off their own refresh.
@@ -195,10 +198,15 @@ export function createXeroClient(log: (message: string) => void, shouldWaitForQu
             );
           }
 
-          const resumeAt = new Date(Date.now() + waitSeconds * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-          log(`  Xero's daily quota is used up — waiting ${Math.round(waitSeconds / 60)} min, continuing at ${resumeAt}. Leave this running.`);
-          await sleep(waitSeconds * 1000);
-          limiter.reset();
+          // One pause shared by every worker, so this is logged and waited out once.
+          quotaPause ??= (async () => {
+            const resumeAt = new Date(Date.now() + waitSeconds * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+            log(`  Xero's daily quota is used up — trying again at ${resumeAt}. Leave this running, it continues on its own.`);
+            await sleep(waitSeconds * 1000);
+            limiter.reset();
+            quotaPause = undefined;
+          })();
+          await quotaPause;
           continue;
         }
         const waitSeconds = Number(res.headers.get("Retry-After") ?? 60);

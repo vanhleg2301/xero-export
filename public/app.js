@@ -1408,6 +1408,8 @@ async function renderSyncPage() {
           <span>Download attachments<small>Invoices, bills, purchase orders, bank transactions and so on. Files already downloaded are skipped.</small></span></label>
         <label class="check"><input type="checkbox" id="opt-refresh" ${state.tenants.length ? "" : "disabled"} />
           <span>Refetch everything<small>Leave unchecked to fetch only what is missing and continue the previous run.</small></span></label>
+        <label class="check"><input type="checkbox" id="opt-wait" checked />
+          <span>Keep going when Xero's daily quota runs out<small>Waits for quota to free up and continues on its own. Leave the app running; close the window to stop.</small></span></label>
         <div class="actions"><button class="btn primary" id="sync-btn" disabled>Start sync</button></div>
         <p class="muted" id="sync-status"></p>
       </div>
@@ -1447,6 +1449,7 @@ async function renderSyncPage() {
     const params = new URLSearchParams({
       attachments: document.getElementById("opt-attachments").checked ? "1" : "0",
       refresh: document.getElementById("opt-refresh").checked ? "1" : "0",
+      wait: document.getElementById("opt-wait").checked ? "1" : "0",
     });
     const res = await fetch(`/api/sync?${params}`, { method: "POST" });
     if (res.status === 400) {

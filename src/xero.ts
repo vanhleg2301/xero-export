@@ -10,6 +10,10 @@ const TOKEN_FILE = "tokens.json";
 // both is far faster than sleeping between calls, which also paid for every round trip.
 const MAX_CALLS_PER_MINUTE = 45;
 const LOG_USAGE_EVERY = 100;
+// Xero frees the daily budget as a rolling 24-hour window, so waiting a while always
+// releases some quota. Retry-After tells us how long; these bound a silly value.
+const MIN_QUOTA_WAIT_SECONDS = 60;
+const MAX_QUOTA_WAIT_SECONDS = 3600;
 const MAX_CONCURRENT_CALLS = 4;
 const REFRESH_TOKEN_LIFETIME_MS = 60 * 24 * 60 * 60 * 1000;
 
@@ -143,7 +147,7 @@ class RateLimiter {
 
 export type XeroClient = ReturnType<typeof createXeroClient>;
 
-export function createXeroClient(log: (message: string) => void) {
+export function createXeroClient(log: (message: string) => void, shouldWaitForQuota = true) {
   let tokens = loadTokens();
   let refreshing: Promise<StoredTokens> | undefined;
   const limiter = new RateLimiter();
@@ -175,16 +179,27 @@ export function createXeroClient(log: (message: string) => void) {
 
       const usage = recordCall(tenantId, res.status === 429);
       if (usage.calls % LOG_USAGE_EVERY === 0) {
-        log(`  ${usage.calls.toLocaleString("en-GB")} of ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} Xero calls used today`);
+        log(`  ${usage.calls.toLocaleString("en-GB")} Xero calls made today (Xero allows ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} per rolling 24 hours)`);
       }
 
       if (res.status === 429) {
         if (res.headers.get("X-Rate-Limit-Problem") === "day") {
           flushUsage();
-          throw new DailyLimitError(
-            `Hit Xero limit of ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} calls per day (${usage.calls.toLocaleString("en-GB")} used, ${usage.rateLimited} of them rate-limited). ` +
-              "Sync again tomorrow; everything already downloaded is kept.",
-          );
+          const retryAfter = Number(res.headers.get("Retry-After")) || 900;
+          const waitSeconds = Math.min(Math.max(retryAfter, MIN_QUOTA_WAIT_SECONDS), MAX_QUOTA_WAIT_SECONDS);
+
+          if (!shouldWaitForQuota) {
+            throw new DailyLimitError(
+              `Xero's daily quota is used up (${usage.calls.toLocaleString("en-GB")} calls made today). ` +
+                "Everything already downloaded is kept — start the sync again later.",
+            );
+          }
+
+          const resumeAt = new Date(Date.now() + waitSeconds * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+          log(`  Xero's daily quota is used up — waiting ${Math.round(waitSeconds / 60)} min, continuing at ${resumeAt}. Leave this running.`);
+          await sleep(waitSeconds * 1000);
+          limiter.reset();
+          continue;
         }
         const waitSeconds = Number(res.headers.get("Retry-After") ?? 60);
         log(`  Xero rate limit — waiting ${waitSeconds}s`);

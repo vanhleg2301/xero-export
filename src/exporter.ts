@@ -18,6 +18,7 @@ interface EndpointSpec {
 export interface ExportOptions {
   shouldDownloadAttachments: boolean;
   shouldRefresh: boolean;
+  shouldWaitForQuota?: boolean;
   log: (message: string) => void;
 }
 
@@ -210,14 +211,13 @@ async function exportTenant(ctx: ExportContext, tenantId: string, tenantName: st
 }
 
 export async function runExport(options: ExportOptions) {
-  const ctx: ExportContext = { ...options, client: createXeroClient(options.log) };
+  const ctx: ExportContext = { ...options, client: createXeroClient(options.log, options.shouldWaitForQuota ?? true) };
   try {
     for (const { tenantId, tenantName } of ctx.client.connections) {
       const used = getUsage(tenantId).calls;
-      options.log(`=== ${tenantName} === (${used.toLocaleString("en-GB")} of ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} calls used today)`);
+      options.log(`=== ${tenantName} === (${used.toLocaleString("en-GB")} calls made today, Xero allows ${DAILY_CALL_LIMIT.toLocaleString("en-GB")} per rolling 24 hours)`);
       await exportTenant(ctx, tenantId, tenantName);
-      const after = getUsage(tenantId);
-      options.log(`  ${after.calls.toLocaleString("en-GB")} calls used today, ${DAILY_CALL_LIMIT - after.calls} left`);
+      options.log(`  ${getUsage(tenantId).calls.toLocaleString("en-GB")} calls made today.`);
     }
     options.log("Sync finished.");
   } finally {

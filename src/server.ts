@@ -109,7 +109,7 @@ function redirect(res: ServerResponse, location: string) {
 }
 
 // ---------- sync job ----------
-function startSync(shouldDownloadAttachments: boolean, shouldRefresh: boolean): boolean {
+function startSync(shouldDownloadAttachments: boolean, shouldRefresh: boolean, shouldWaitForQuota: boolean): boolean {
   if (syncJob.status === "running") return false;
   syncJob = { status: "running", startedAt: Date.now(), shouldDownloadAttachments, shouldRefresh, logs: [] };
   const job = syncJob;
@@ -120,7 +120,7 @@ function startSync(shouldDownloadAttachments: boolean, shouldRefresh: boolean): 
     console.log(message);
   };
 
-  runExport({ shouldDownloadAttachments, shouldRefresh, log })
+  runExport({ shouldDownloadAttachments, shouldRefresh, shouldWaitForQuota, log })
     .then(() => {
       job.status = "done";
     })
@@ -392,7 +392,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === "/api/sync") {
     if (req.method === "POST") {
       if (!getConnectionStatus().isConnected) return sendJson(res, { error: "Not connected to Xero yet." }, 400);
-      const isStarted = startSync(url.searchParams.get("attachments") === "1", url.searchParams.get("refresh") === "1");
+      const isStarted = startSync(
+        url.searchParams.get("attachments") === "1",
+        url.searchParams.get("refresh") === "1",
+        url.searchParams.get("wait") !== "0",
+      );
       return sendJson(res, syncJob, isStarted ? 202 : 409);
     }
     return sendJson(res, syncJob);

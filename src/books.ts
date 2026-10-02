@@ -72,6 +72,11 @@ function saveAccounts(tenantDir: string, accounts: Account[]) {
 
 const asString = (value: unknown) => (value === null || value === undefined ? "" : String(value));
 
+function toFallbackCode(record: XeroRecord): string {
+  const id = asString(record.AccountID).replace(/-/g, "");
+  return id ? `X-${id.slice(0, 6).toUpperCase()}` : "";
+}
+
 function toAccountClass(value: unknown): AccountClass {
   const key = asString(value).toLowerCase();
   return (ACCOUNT_CLASSES as readonly string[]).includes(key) ? (key as AccountClass) : "expense";
@@ -86,7 +91,8 @@ export function seedAccountsFromXero(tenantDir: string): { added: number; kept: 
   const added: Account[] = [];
 
   for (const record of xeroAccounts as XeroRecord[]) {
-    const code = asString(record.Code).trim();
+    // Bank accounts in Xero often carry no code at all; give them one so they can be posted to.
+    const code = asString(record.Code).trim() || toFallbackCode(record);
     if (!code) continue;
 
     const current = byCode.get(code.toLowerCase());

@@ -143,6 +143,8 @@ const BOOKS_PAGES = [
   { id: "journal", label: "Journal" },
   { id: "bank", label: "Bank" },
   { id: "trial-balance", label: "Trial balance" },
+  { id: "account-transactions", label: "Account transactions" },
+  { id: "aged", label: "Aged balances" },
   { id: "profit-and-loss", label: "Profit & loss" },
   { id: "balance-sheet", label: "Balance sheet" },
   { id: "accounts", label: "Chart of accounts" },
@@ -152,7 +154,10 @@ const BOOKS_PAGES = [
 function getRoute() {
   const hash = location.hash.replace(/^#\//, "");
   if (hash === "sync") return { area: "sync", page: "sync" };
-  if (hash.startsWith("books")) return { area: "books", page: hash.split("/")[1] || "journal" };
+  if (hash.startsWith("books")) {
+    const parts = hash.split("/");
+    return { area: "books", page: parts[1] || "journal", arg: parts[2] ? decodeURIComponent(parts[2]) : "" };
+  }
   return { area: "data", page: hash || "home" };
 }
 
@@ -201,6 +206,8 @@ async function handleRoute() {
     if (route.page === "bank") return renderBankPage();
     if (route.page === "accounts") return renderAccountsPage();
     if (route.page === "trial-balance") return renderTrialBalancePage();
+    if (route.page === "account-transactions") return renderAccountTransactionsPage(route.arg);
+    if (route.page === "aged") return renderAgedPage();
     if (route.page === "profit-and-loss") return renderProfitAndLossPage();
     if (route.page === "balance-sheet") return renderBalanceSheetPage();
     if (route.page === "settings") return renderBooksSettingsPage();
@@ -705,6 +712,7 @@ async function renderJournalPage() {
     <div class="page-head">
       <div><div class="crumb">Accounting</div><h1>Journal</h1></div>
       <div class="actions">
+        <a class="btn" href="${apiUrl("books/journal?format=csv")}">Export CSV</a>
         <button class="btn" id="import-docs">Post Xero documents</button>
         <button class="btn primary" id="new-entry">New journal entry</button>
       </div>
@@ -762,8 +770,20 @@ async function importDocuments() {
   }
   state.entries = data.entries;
   renderJournalTable();
-  note.textContent =
-    `${data.posted} posted, ${data.skipped} skipped` + (data.failures.length ? ` — ${data.failures.length} could not post: ${data.failures[0]}` : "");
+
+  const leftOut = Object.entries(data.notPosted ?? {});
+  note.innerHTML = [
+    `${data.posted} posted, ${data.skipped} already in the books or not postable`,
+    leftOut.length
+      ? `Not posted on purpose: ${leftOut.map(([kind, count]) => `${esc(kind)} (${count})`).join(", ")}`
+      : "",
+    data.failures.length
+      ? `${data.failures.length} could not post — ${data.failures.slice(0, 3).map(esc).join("; ")}${data.failures.length > 3 ? ", ..." : ""}`
+      : "",
+  ]
+    .filter(Boolean)
+    .map((line) => `<div>${line}</div>`)
+    .join("");
 }
 
 function renderEntryLines(entry) {
@@ -936,8 +956,11 @@ async function renderTrialBalancePage() {
   mainEl.innerHTML = `
     <div class="page-head">
       <div><div class="crumb">Accounting</div><h1>Trial balance</h1></div>
-      <div class="${data.isBalanced ? "balance-ok" : "balance-bad"}">
-        ${data.isBalanced ? "In balance" : "Out of balance"}
+      <div class="actions">
+        <a class="btn" href="${apiUrl("books/trial-balance?format=csv")}">Export CSV</a>
+        <div class="${data.isBalanced ? "balance-ok" : "balance-bad"}">
+          ${data.isBalanced ? "In balance" : "Out of balance"}
+        </div>
       </div>
     </div>
     <p class="muted">Every posted journal line, summed per account. ${data.entryCount} entries included.</p>
@@ -952,7 +975,7 @@ async function renderTrialBalancePage() {
                   ${data.rows
                     .map(
                       (row) => `<tr>
-                        <td>${esc(row.code)}</td>
+                        <td><a href="#/books/account-transactions/${encodeURIComponent(row.code)}">${esc(row.code)}</a></td>
                         <td>${esc(row.name)}</td>
                         <td>${esc(row.accountClass)}</td>
                         <td class="right">${row.debit ? formatMoney(row.debit) : ""}</td>
@@ -966,6 +989,164 @@ async function renderTrialBalancePage() {
         }
       </div>
     </div>`;
+}
+
+// ---------- books: account transactions ----------
+async function renderAccountTransactionsPage(code) {
+  if (code) state.txCode = code;
+  if (!state.txCode) {
+    const trialBalance = await fetchJson(apiUrl("books/trial-balance"));
+    state.txCode = trialBalance.rows[0]?.code ?? "";
+  }
+  if (!state.txCode) {
+    mainEl.innerHTML = `
+      <div class="page-head"><div><div class="crumb">Accounting</div><h1>Account transactions</h1></div></div>
+      <div class="card"><div class="empty-state">Nothing posted yet. Open <a href="#/books/journal">Journal</a> and click "Post Xero documents" first.</div></div>`;
+    return;
+  }
+
+  const params = new URLSearchParams({ code: state.txCode });
+  if (state.txFrom) params.set("from", state.txFrom);
+  if (state.txTo) params.set("to", state.txTo);
+
+  let data;
+  try {
+    data = await fetchJson(apiUrl(`books/account-transactions?${params}`));
+  } catch {
+    mainEl.innerHTML = `<div class="card"><div class="empty-state">No account with code ${esc(state.txCode)} in the chart of accounts.</div></div>`;
+    return;
+  }
+  state.txFrom = data.from;
+  state.txTo = data.to;
+
+  const csvParams = new URLSearchParams({ code: data.code, from: data.from, to: data.to, format: "csv" });
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Accounting</div><h1>${esc(data.code)} — ${esc(data.name)}</h1></div>
+      <div class="actions">
+        <label class="inline-field">Account
+          <select id="tx-account">
+            ${data.accounts
+              .map((a) => `<option value="${esc(a.code)}" ${a.code === data.code ? "selected" : ""}>${esc(a.code)} — ${esc(a.name)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label class="inline-field">From <input type="date" id="tx-from" value="${esc(data.from)}" /></label>
+        <label class="inline-field">To <input type="date" id="tx-to" value="${esc(data.to)}" /></label>
+        <a class="btn" href="${apiUrl(`books/account-transactions?${csvParams}`)}">Export CSV</a>
+      </div>
+    </div>
+    <p class="muted">Every journal line that touched this account, with the balance running down the page.</p>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>Date</th><th>Entry</th><th>Description</th><th class="right">Debit</th><th class="right">Credit</th><th class="right">Balance</th></tr></thead>
+          <tbody>
+            <tr><td colspan="5">Opening balance</td><td class="right">${formatMoney(data.opening)}</td></tr>
+            ${data.rows
+              .map(
+                (row) => `<tr data-id="${esc(row.entryId)}">
+                  <td>${esc(formatDate(row.date))}</td>
+                  <td>${esc(row.number)}${row.status === "voided" ? ' <span class="badge voided">Voided</span>' : ""}</td>
+                  <td>${esc(row.description || row.narration)}${row.description ? `<div class="muted">${esc(row.narration)}</div>` : ""}</td>
+                  <td class="right">${row.debit ? formatMoney(row.debit) : ""}</td>
+                  <td class="right">${row.credit ? formatMoney(row.credit) : ""}</td>
+                  <td class="right">${formatMoney(row.balance)}</td>
+                </tr>`,
+              )
+              .join("")}
+          </tbody>
+          <tfoot><tr><td colspan="3">Closing balance</td><td class="right">${formatMoney(data.totalDebit)}</td><td class="right">${formatMoney(data.totalCredit)}</td><td class="right">${formatMoney(data.closing)}</td></tr></tfoot>
+        </table>
+      </div>
+    </div>`;
+
+  document.getElementById("tx-account").addEventListener("change", (event) => {
+    state.txCode = event.target.value;
+    location.hash = `#/books/account-transactions/${encodeURIComponent(state.txCode)}`;
+  });
+  const reload = () => {
+    state.txFrom = document.getElementById("tx-from").value;
+    state.txTo = document.getElementById("tx-to").value;
+    renderAccountTransactionsPage(state.txCode);
+  };
+  document.getElementById("tx-from").addEventListener("change", reload);
+  document.getElementById("tx-to").addEventListener("change", reload);
+
+  mainEl.querySelectorAll("tr[data-id]").forEach((tr) =>
+    tr.addEventListener("click", async () => {
+      if (!state.entries?.length) state.entries = (await fetchJson(apiUrl("books/journal"))).entries;
+      openEntryDetail(state.entries.find((entry) => entry.id === tr.dataset.id));
+    }),
+  );
+}
+
+// ---------- books: aged receivables and payables ----------
+const AGED_BUCKETS = [
+  ["current", "Current"],
+  ["days1to30", "1-30 days"],
+  ["days31to60", "31-60 days"],
+  ["days61to90", "61-90 days"],
+  ["older", "Older"],
+];
+
+async function renderAgedPage() {
+  const params = new URLSearchParams({ kind: state.agedKind ?? "receivables" });
+  if (state.agedAsOf) params.set("asOf", state.agedAsOf);
+  const data = await fetchJson(apiUrl(`books/aged?${params}`));
+  state.agedKind = data.kind;
+  state.agedAsOf = data.asOf;
+
+  const isReceivables = data.kind === "receivables";
+  const csvParams = new URLSearchParams({ kind: data.kind, asOf: data.asOf, format: "csv" });
+
+  mainEl.innerHTML = `
+    <div class="page-head">
+      <div><div class="crumb">Accounting</div><h1>Aged ${isReceivables ? "receivables" : "payables"}</h1></div>
+      <div class="actions">
+        <label class="inline-field">Report
+          <select id="aged-kind">
+            <option value="receivables" ${isReceivables ? "selected" : ""}>Receivables (owed to you)</option>
+            <option value="payables" ${isReceivables ? "" : "selected"}>Payables (you owe)</option>
+          </select>
+        </label>
+        <label class="inline-field">As at <input type="date" id="aged-date" value="${esc(data.asOf)}" /></label>
+        <a class="btn" href="${apiUrl(`books/aged?${csvParams}`)}">Export CSV</a>
+      </div>
+    </div>
+    <p class="muted">${data.invoiceCount} unpaid ${isReceivables ? "invoices" : "bills"} grouped by how long they have been overdue. Outstanding amounts come straight from Xero, so payments and credit notes are already applied.</p>
+    <div class="card">
+      <div class="table-wrap">
+        ${
+          data.rows.length === 0
+            ? `<div class="empty-state">Nothing outstanding. Sync your Xero data if you expected something here.</div>`
+            : `<table class="data">
+                <thead><tr><th>Contact</th>${AGED_BUCKETS.map(([, label]) => `<th class="right">${label}</th>`).join("")}<th class="right">Total</th></tr></thead>
+                <tbody>
+                  ${data.rows
+                    .map(
+                      (row) => `<tr>
+                        <td>${esc(row.contact)}</td>
+                        ${AGED_BUCKETS.map(([key]) => `<td class="right">${row[key] ? formatMoney(row[key]) : ""}</td>`).join("")}
+                        <td class="right">${formatMoney(row.total)}</td>
+                      </tr>`,
+                    )
+                    .join("")}
+                </tbody>
+                <tfoot><tr><td>Total</td>${AGED_BUCKETS.map(([key]) => `<td class="right">${formatMoney(data.totals[key])}</td>`).join("")}<td class="right">${formatMoney(data.totals.total)}</td></tr></tfoot>
+              </table>`
+        }
+      </div>
+    </div>`;
+
+  document.getElementById("aged-kind").addEventListener("change", (event) => {
+    state.agedKind = event.target.value;
+    renderAgedPage();
+  });
+  document.getElementById("aged-date").addEventListener("change", (event) => {
+    state.agedAsOf = event.target.value;
+    renderAgedPage();
+  });
 }
 
 // ---------- books: bank reconciliation ----------
@@ -1215,7 +1396,11 @@ function renderReportSection(section, options = {}) {
           : section.lines
               .map(
                 (line) => `<tr>
-                  <td>${line.code ? `<span class="muted">${esc(line.code)}</span> ` : ""}${esc(line.name)}</td>
+                  <td>${
+                    line.code
+                      ? `<a href="#/books/account-transactions/${encodeURIComponent(line.code)}"><span class="muted">${esc(line.code)}</span> ${esc(line.name)}</a>`
+                      : esc(line.name)
+                  }</td>
                   <td class="right">${formatMoney(line.amount)}</td>
                 </tr>`,
               )
@@ -1240,6 +1425,7 @@ async function renderProfitAndLossPage() {
       <div class="actions">
         <label class="inline-field">From <input type="date" id="pl-from" value="${esc(data.from)}" /></label>
         <label class="inline-field">To <input type="date" id="pl-to" value="${esc(data.to)}" /></label>
+        <a class="btn" href="${apiUrl(`books/profit-and-loss?from=${encodeURIComponent(data.from)}&to=${encodeURIComponent(data.to)}&format=csv`)}">Export CSV</a>
       </div>
     </div>
     <div class="card report-card">
@@ -1272,6 +1458,7 @@ async function renderBalanceSheetPage() {
       <div><div class="crumb">Accounting</div><h1>Balance sheet</h1></div>
       <div class="actions">
         <label class="inline-field">As at <input type="date" id="bs-date" value="${esc(data.asOf)}" /></label>
+        <a class="btn" href="${apiUrl(`books/balance-sheet?asOf=${encodeURIComponent(data.asOf)}&format=csv`)}">Export CSV</a>
         <div class="${data.isBalanced ? "balance-ok" : "balance-bad"}">${data.isBalanced ? "In balance" : "Out of balance"}</div>
       </div>
     </div>

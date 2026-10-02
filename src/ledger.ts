@@ -4,7 +4,15 @@ import type { XeroRecord } from "./csvTables";
 import { loadDataset } from "./dataStore";
 import { assertNotLocked } from "./settings";
 
-export type SourceType = "manual" | "invoice" | "bill" | "payment";
+export type SourceType =
+  | "manual"
+  | "invoice"
+  | "bill"
+  | "payment"
+  | "credit-note"
+  | "bank-transaction"
+  | "bank-transfer"
+  | "xero-journal";
 
 export interface JournalLine {
   accountCode: string;
@@ -45,6 +53,21 @@ const CENT = 0.005;
 const round2 = (value: number) => Math.round(value * 100) / 100;
 const asString = (value: unknown) => (value === null || value === undefined ? "" : String(value));
 const asNumber = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+const asRecord = (value: unknown) => (value ?? {}) as XeroRecord;
+
+// Xero sends dates either as "2026-09-02T00:00:00" or as "/Date(1756771200000+0000)/".
+function toIsoDate(value: unknown): string {
+  const raw = asString(value);
+  const ms = /^\/Date\((-?\d+)/.exec(raw);
+  return ms ? new Date(Number(ms[1])).toISOString().slice(0, 10) : raw.slice(0, 10);
+}
+
+// On a tax-inclusive document LineAmount already contains the tax, so the tax has to come
+// off before it is posted — otherwise the tax would be counted twice.
+function getLineNetAmount(item: XeroRecord, lineAmountTypes: string): number {
+  const amount = asNumber(item.LineAmount);
+  return round2(lineAmountTypes === "Inclusive" ? amount - asNumber(item.TaxAmount) : amount);
+}
 
 export function loadJournal(tenantDir: string): JournalEntry[] {
   return readBooksFile<JournalEntry[]>(tenantDir, JOURNAL_FILE) ?? [];
@@ -138,6 +161,16 @@ export function voidEntry(tenantDir: string, id: string): JournalEntry {
 interface PostingContext {
   accountsByCode: Map<string, Account>;
   accountsBySystem: Map<string, Account>;
+  accountsByXeroId: Map<string, Account>;
+}
+
+// Xero names the bank account on a transaction by code when it has one and by id otherwise.
+function getBankCode(ctx: PostingContext, bankAccount: XeroRecord): string {
+  const code = asString(bankAccount.Code).trim();
+  if (code) return code;
+  const byId = ctx.accountsByXeroId.get(asString(bankAccount.AccountID));
+  if (byId) return byId.code;
+  throw new BooksError(`bank account "${asString(bankAccount.Name)}" is not in the chart of accounts — import it from Xero first`);
 }
 
 function getSystemAccount(ctx: PostingContext, systemAccount: string, label: string): Account {
@@ -149,12 +182,12 @@ function getSystemAccount(ctx: PostingContext, systemAccount: string, label: str
 function buildInvoiceInput(invoice: XeroRecord, ctx: PostingContext): EntryInput {
   const isBill = asString(invoice.Type) === "ACCPAY";
   const control = getSystemAccount(ctx, isBill ? "CREDITORS" : "DEBTORS", isBill ? "Accounts Payable" : "Accounts Receivable");
-  const contact = asString((invoice.Contact as XeroRecord | undefined)?.Name);
+  const contact = asString(asRecord(invoice.Contact).Name);
   const number = asString(invoice.InvoiceNumber) || asString(invoice.InvoiceID).slice(0, 8);
   const lines: EntryInput["lines"] = [];
 
   for (const item of (invoice.LineItems as XeroRecord[] | undefined) ?? []) {
-    const amount = round2(asNumber(item.LineAmount));
+    const amount = getLineNetAmount(item, asString(invoice.LineAmountTypes));
     if (amount === 0) continue;
     lines.push({
       accountCode: asString(item.AccountCode),
@@ -188,21 +221,40 @@ function buildInvoiceInput(invoice: XeroRecord, ctx: PostingContext): EntryInput
   };
 }
 
+// Xero's PaymentType says which control account the payment settles and which way the cash
+// moved; a refund on a credit note runs the opposite way to a payment on an invoice.
+const PAYMENT_TYPES: Record<string, { systemAccount: "DEBTORS" | "CREDITORS"; isMoneyIn: boolean }> = {
+  ACCRECPAYMENT: { systemAccount: "DEBTORS", isMoneyIn: true },
+  ARCREDITPAYMENT: { systemAccount: "DEBTORS", isMoneyIn: false },
+  ACCPAYPAYMENT: { systemAccount: "CREDITORS", isMoneyIn: false },
+  APCREDITPAYMENT: { systemAccount: "CREDITORS", isMoneyIn: true },
+};
+
+function getPaymentType(payment: XeroRecord): string {
+  const declared = asString(payment.PaymentType);
+  if (declared) return declared;
+  // Older payloads leave PaymentType out; fall back to the document it settles.
+  return asString(asRecord(payment.Invoice).Type) === "ACCPAY" ? "ACCPAYPAYMENT" : "ACCRECPAYMENT";
+}
+
 function buildPaymentInput(payment: XeroRecord, ctx: PostingContext): EntryInput {
-  const invoice = (payment.Invoice as XeroRecord | undefined) ?? {};
-  const isBillPayment = asString(invoice.Type) === "ACCPAY";
-  const control = getSystemAccount(ctx, isBillPayment ? "CREDITORS" : "DEBTORS", isBillPayment ? "Accounts Payable" : "Accounts Receivable");
-  const bankCode = asString((payment.Account as XeroRecord | undefined)?.Code);
+  const paymentType = PAYMENT_TYPES[getPaymentType(payment)];
+  if (!paymentType) throw new BooksError(`payment type ${getPaymentType(payment)} is not supported`);
+
+  const settled = asRecord(asRecord(payment.Invoice).InvoiceID ? payment.Invoice : payment.CreditNote);
+  const control = getSystemAccount(ctx, paymentType.systemAccount, paymentType.systemAccount === "DEBTORS" ? "Accounts Receivable" : "Accounts Payable");
+  const bankCode = getBankCode(ctx, asRecord(payment.Account));
+
   const amount = round2(asNumber(payment.Amount));
-  const number = asString(invoice.InvoiceNumber);
-  const contact = asString((invoice.Contact as XeroRecord | undefined)?.Name);
+  const number = asString(settled.InvoiceNumber) || asString(settled.CreditNoteNumber);
+  const contact = asString(asRecord(settled.Contact).Name);
 
   return {
-    date: asString(payment.Date).replace(/^\/Date\((-?\d+).*$/, (_, ms) => new Date(Number(ms)).toISOString().slice(0, 10)).slice(0, 10),
-    narration: `Payment ${number ? `for ${number} ` : ""}— ${contact}`,
+    date: toIsoDate(payment.DateString || payment.Date),
+    narration: `${paymentType.isMoneyIn ? "Payment received" : "Payment made"}${number ? ` for ${number}` : ""}${contact ? ` — ${contact}` : ""}`,
     lines: [
-      { accountCode: bankCode, description: contact, debit: isBillPayment ? 0 : amount, credit: isBillPayment ? amount : 0 },
-      { accountCode: control.code, description: number, debit: isBillPayment ? amount : 0, credit: isBillPayment ? 0 : amount },
+      { accountCode: bankCode, description: contact, debit: paymentType.isMoneyIn ? amount : 0, credit: paymentType.isMoneyIn ? 0 : amount },
+      { accountCode: control.code, description: number, debit: paymentType.isMoneyIn ? 0 : amount, credit: paymentType.isMoneyIn ? amount : 0 },
     ],
     sourceType: "payment",
     sourceKey: `payment:${asString(payment.PaymentID)}`,
@@ -210,13 +262,228 @@ function buildPaymentInput(payment: XeroRecord, ctx: PostingContext): EntryInput
   };
 }
 
+// A credit note is the mirror image of the invoice it credits.
+function buildCreditNoteInput(note: XeroRecord, ctx: PostingContext): EntryInput {
+  const isSupplierCredit = asString(note.Type) === "ACCPAYCREDIT";
+  const control = getSystemAccount(ctx, isSupplierCredit ? "CREDITORS" : "DEBTORS", isSupplierCredit ? "Accounts Payable" : "Accounts Receivable");
+  const contact = asString(asRecord(note.Contact).Name);
+  const number = asString(note.CreditNoteNumber) || asString(note.CreditNoteID).slice(0, 8);
+  const lines: EntryInput["lines"] = [];
+
+  for (const item of (note.LineItems as XeroRecord[] | undefined) ?? []) {
+    const amount = getLineNetAmount(item, asString(note.LineAmountTypes));
+    if (amount === 0) continue;
+    lines.push({
+      accountCode: asString(item.AccountCode),
+      description: asString(item.Description),
+      debit: isSupplierCredit ? 0 : amount,
+      credit: isSupplierCredit ? amount : 0,
+    });
+  }
+
+  const tax = round2(asNumber(note.TotalTax));
+  if (tax !== 0) {
+    const gst = getSystemAccount(ctx, "GST", "GST / Sales Tax");
+    lines.push({ accountCode: gst.code, description: "Tax", debit: isSupplierCredit ? 0 : tax, credit: isSupplierCredit ? tax : 0 });
+  }
+
+  const total = round2(asNumber(note.Total));
+  lines.push({
+    accountCode: control.code,
+    description: contact,
+    debit: isSupplierCredit ? total : 0,
+    credit: isSupplierCredit ? 0 : total,
+  });
+
+  return {
+    date: toIsoDate(note.DateString || note.Date),
+    narration: `Credit note ${number} — ${contact}`,
+    lines,
+    sourceType: "credit-note",
+    sourceKey: `creditnote:${asString(note.CreditNoteID)}`,
+    sourceLabel: number,
+  };
+}
+
+// Spend and receive money: cash against the coded lines, no invoice involved.
+function buildBankTransactionInput(transaction: XeroRecord, ctx: PostingContext): EntryInput {
+  const isSpend = asString(transaction.Type) === "SPEND";
+  const bankCode = getBankCode(ctx, asRecord(transaction.BankAccount));
+
+  const contact = asString(asRecord(transaction.Contact).Name);
+  const reference = asString(transaction.Reference);
+  const lines: EntryInput["lines"] = [];
+
+  for (const item of (transaction.LineItems as XeroRecord[] | undefined) ?? []) {
+    const amount = getLineNetAmount(item, asString(transaction.LineAmountTypes));
+    if (amount === 0) continue;
+    lines.push({
+      accountCode: asString(item.AccountCode),
+      description: asString(item.Description),
+      debit: isSpend ? amount : 0,
+      credit: isSpend ? 0 : amount,
+    });
+  }
+
+  const tax = round2(asNumber(transaction.TotalTax));
+  if (tax !== 0) {
+    const gst = getSystemAccount(ctx, "GST", "GST / Sales Tax");
+    lines.push({ accountCode: gst.code, description: "Tax", debit: isSpend ? tax : 0, credit: isSpend ? 0 : tax });
+  }
+
+  const total = round2(asNumber(transaction.Total));
+  lines.push({ accountCode: bankCode, description: contact || reference, debit: isSpend ? 0 : total, credit: isSpend ? total : 0 });
+
+  return {
+    date: toIsoDate(transaction.DateString || transaction.Date),
+    narration: `${isSpend ? "Spend money" : "Receive money"}${contact ? ` — ${contact}` : ""}${reference ? ` (${reference})` : ""}`,
+    lines,
+    sourceType: "bank-transaction",
+    sourceKey: `banktransaction:${asString(transaction.BankTransactionID)}`,
+    sourceLabel: reference,
+  };
+}
+
+function buildBankTransferInput(transfer: XeroRecord, ctx: PostingContext): EntryInput {
+  const fromCode = getBankCode(ctx, asRecord(transfer.FromBankAccount));
+  const toCode = getBankCode(ctx, asRecord(transfer.ToBankAccount));
+
+  const amount = round2(asNumber(transfer.Amount));
+  const fromName = asString(asRecord(transfer.FromBankAccount).Name);
+  const toName = asString(asRecord(transfer.ToBankAccount).Name);
+
+  return {
+    date: toIsoDate(transfer.DateString || transfer.Date),
+    narration: `Bank transfer ${fromName || fromCode} to ${toName || toCode}`,
+    lines: [
+      { accountCode: toCode, description: `From ${fromName || fromCode}`, debit: amount, credit: 0 },
+      { accountCode: fromCode, description: `To ${toName || toCode}`, debit: 0, credit: amount },
+    ],
+    sourceType: "bank-transfer",
+    sourceKey: `banktransfer:${asString(transfer.BankTransferID)}`,
+    sourceLabel: "",
+  };
+}
+
+// Manual journals come across already balanced: a positive LineAmount is a debit.
+function buildManualJournalInput(journal: XeroRecord): EntryInput {
+  const journalLines = (journal.JournalLines as XeroRecord[] | undefined) ?? [];
+  const tax = round2(journalLines.reduce((sum, line) => sum + asNumber(line.TaxAmount), 0));
+  if (tax !== 0) throw new BooksError("manual journals that carry tax are not supported yet");
+
+  const lines: EntryInput["lines"] = [];
+  for (const line of journalLines) {
+    const amount = round2(asNumber(line.LineAmount));
+    if (amount === 0) continue;
+    lines.push({
+      accountCode: asString(line.AccountCode),
+      description: asString(line.Description),
+      debit: amount > 0 ? amount : 0,
+      credit: amount < 0 ? -amount : 0,
+    });
+  }
+
+  return {
+    date: toIsoDate(journal.DateString || journal.Date),
+    narration: asString(journal.Narration) || "Manual journal from Xero",
+    lines,
+    sourceType: "xero-journal",
+    sourceKey: `manualjournal:${asString(journal.ManualJournalID)}`,
+    sourceLabel: "",
+  };
+}
+
 export interface ImportResult {
   posted: number;
   skipped: number;
+  /** Records Xero holds that this ledger deliberately does not post, counted by kind. */
+  notPosted: Record<string, number>;
   failures: string[];
 }
 
+interface DocumentSource {
+  dataset: string;
+  keyOf: (record: XeroRecord) => string;
+  labelOf: (record: XeroRecord) => string;
+  /** Drafts, voided and deleted records never belong in the ledger. */
+  isSkipped: (record: XeroRecord) => boolean;
+  /** A label when the record is real but out of scope, so the user can see what was left out. */
+  getUnsupported?: (record: XeroRecord) => string | undefined;
+  build: (record: XeroRecord, ctx: PostingContext) => EntryInput;
+}
+
 const POSTABLE_INVOICE_STATUSES = new Set(["AUTHORISED", "PAID"]);
+// Xero mirrors transfers, prepayments and overpayments as hyphenated bank transactions as well
+// as their own documents; posting both sides would count the cash twice.
+const POSTABLE_BANK_TRANSACTION_TYPES = new Set(["SPEND", "RECEIVE"]);
+
+const DOCUMENT_SOURCES: DocumentSource[] = [
+  {
+    dataset: "Invoices",
+    keyOf: (record) => `invoice:${asString(record.InvoiceID)}`,
+    labelOf: (record) => `${asString(record.Type) === "ACCPAY" ? "bill" : "invoice"} ${asString(record.InvoiceNumber)}`,
+    isSkipped: (record) => !POSTABLE_INVOICE_STATUSES.has(asString(record.Status)),
+    build: buildInvoiceInput,
+  },
+  {
+    dataset: "CreditNotes",
+    keyOf: (record) => `creditnote:${asString(record.CreditNoteID)}`,
+    labelOf: (record) => `credit note ${asString(record.CreditNoteNumber)}`,
+    isSkipped: (record) => !POSTABLE_INVOICE_STATUSES.has(asString(record.Status)),
+    build: buildCreditNoteInput,
+  },
+  {
+    dataset: "Payments",
+    keyOf: (record) => `payment:${asString(record.PaymentID)}`,
+    labelOf: (record) => `payment ${asString(record.PaymentID).slice(0, 8)}`,
+    isSkipped: (record) => asString(record.Status) === "DELETED",
+    getUnsupported: (record) => (PAYMENT_TYPES[getPaymentType(record)] ? undefined : `Payments of type ${getPaymentType(record)}`),
+    build: buildPaymentInput,
+  },
+  {
+    dataset: "BankTransactions",
+    keyOf: (record) => `banktransaction:${asString(record.BankTransactionID)}`,
+    labelOf: (record) => `bank transaction ${asString(record.Reference) || asString(record.BankTransactionID).slice(0, 8)}`,
+    isSkipped: (record) => asString(record.Status) === "DELETED" || asString(record.Status) === "VOIDED",
+    getUnsupported: (record) =>
+      POSTABLE_BANK_TRANSACTION_TYPES.has(asString(record.Type)) ? undefined : `Bank transactions of type ${asString(record.Type)}`,
+    build: buildBankTransactionInput,
+  },
+  {
+    dataset: "BankTransfers",
+    keyOf: (record) => `banktransfer:${asString(record.BankTransferID)}`,
+    labelOf: (record) => `bank transfer ${asString(record.BankTransferID).slice(0, 8)}`,
+    isSkipped: () => false,
+    build: buildBankTransferInput,
+  },
+  {
+    dataset: "ManualJournals",
+    keyOf: (record) => `manualjournal:${asString(record.ManualJournalID)}`,
+    labelOf: (record) => `manual journal ${asString(record.ManualJournalID).slice(0, 8)}`,
+    isSkipped: (record) => asString(record.Status) !== "POSTED",
+    build: buildManualJournalInput,
+  },
+  {
+    dataset: "Prepayments",
+    keyOf: (record) => `prepayment:${asString(record.PrepaymentID)}`,
+    labelOf: (record) => `prepayment ${asString(record.PrepaymentID).slice(0, 8)}`,
+    isSkipped: (record) => asString(record.Status) === "VOIDED",
+    getUnsupported: () => "Prepayments",
+    build: () => {
+      throw new BooksError("prepayments are not supported yet");
+    },
+  },
+  {
+    dataset: "Overpayments",
+    keyOf: (record) => `overpayment:${asString(record.OverpaymentID)}`,
+    labelOf: (record) => `overpayment ${asString(record.OverpaymentID).slice(0, 8)}`,
+    isSkipped: (record) => asString(record.Status) === "VOIDED",
+    getUnsupported: () => "Overpayments",
+    build: () => {
+      throw new BooksError("overpayments are not supported yet");
+    },
+  },
+];
 
 export function importXeroDocuments(tenantDir: string): ImportResult {
   const accounts = loadAccounts(tenantDir);
@@ -225,44 +492,37 @@ export function importXeroDocuments(tenantDir: string): ImportResult {
   const ctx: PostingContext = {
     accountsByCode: new Map(accounts.map((a) => [a.code.toLowerCase(), a])),
     accountsBySystem: new Map(accounts.filter((a) => a.systemAccount).map((a) => [a.systemAccount as string, a])),
+    accountsByXeroId: new Map(accounts.filter((a) => a.xeroAccountId).map((a) => [a.xeroAccountId as string, a])),
   };
 
   const entries = loadJournal(tenantDir);
   const alreadyPosted = new Set(entries.filter((e) => e.sourceKey).map((e) => e.sourceKey));
-  const result: ImportResult = { posted: 0, skipped: 0, failures: [] };
+  const result: ImportResult = { posted: 0, skipped: 0, notPosted: {}, failures: [] };
   const added: JournalEntry[] = [];
 
-  const documents: { records: XeroRecord[]; build: (record: XeroRecord) => EntryInput; keyOf: (record: XeroRecord) => string; skip: (record: XeroRecord) => boolean }[] = [
-    {
-      records: loadDataset(tenantDir, "Invoices"),
-      build: (record) => buildInvoiceInput(record, ctx),
-      keyOf: (record) => `invoice:${asString(record.InvoiceID)}`,
-      skip: (record) => !POSTABLE_INVOICE_STATUSES.has(asString(record.Status)),
-    },
-    {
-      records: loadDataset(tenantDir, "Payments"),
-      build: (record) => buildPaymentInput(record, ctx),
-      keyOf: (record) => `payment:${asString(record.PaymentID)}`,
-      skip: (record) => asString(record.Status) === "DELETED",
-    },
-  ];
-
-  for (const document of documents) {
-    for (const record of document.records) {
-      const key = document.keyOf(record);
-      if (document.skip(record) || alreadyPosted.has(key)) {
+  for (const source of DOCUMENT_SOURCES) {
+    for (const record of loadDataset(tenantDir, source.dataset)) {
+      const key = source.keyOf(record);
+      if (source.isSkipped(record) || alreadyPosted.has(key)) {
         result.skipped++;
         continue;
       }
+
+      const unsupported = source.getUnsupported?.(record);
+      if (unsupported) {
+        result.notPosted[unsupported] = (result.notPosted[unsupported] ?? 0) + 1;
+        continue;
+      }
+
       try {
-        const input = document.build(record);
+        const input = source.build(record, ctx);
         assertNotLocked(tenantDir, input.date);
         const entry = buildEntry(input, ctx.accountsByCode, [...entries, ...added]);
         added.push(entry);
         alreadyPosted.add(key);
         result.posted++;
       } catch (err) {
-        result.failures.push(`${key.split(":")[0]} ${asString(record.InvoiceNumber) || key.slice(-8)}: ${(err as Error).message}`);
+        result.failures.push(`${source.labelOf(record)}: ${(err as Error).message}`);
       }
     }
   }

@@ -14,7 +14,19 @@ import {
 } from "./dataStore";
 import { BooksError, loadAccounts, seedAccountsFromXero, upsertAccount } from "./books";
 import { getTrialBalance, importXeroDocuments, loadJournal, postEntry, voidEntry } from "./ledger";
-import { getBalanceSheet, getProfitAndLoss } from "./reports";
+import {
+  accountTransactionsToMatrix,
+  agedToMatrix,
+  balanceSheetToMatrix,
+  getAccountTransactions,
+  getAgedBalances,
+  getBalanceSheet,
+  getProfitAndLoss,
+  journalToMatrix,
+  profitAndLossToMatrix,
+  trialBalanceToMatrix,
+  type AgedKind,
+} from "./reports";
 import { getFinancialYear, loadSettings, saveSettings } from "./settings";
 import {
   addStatementLine,
@@ -31,6 +43,7 @@ import { getConfig, saveCredentials } from "./config";
 import { buildExcelReport } from "./excelReport";
 import { runExport } from "./exporter";
 import { buildHtmlReport } from "./htmlReport";
+import { matrixToCsv } from "./csvTables";
 import { VIEWS, type ViewSpec } from "./views";
 import { exchangeCodeForTokens, getAuthorizeUrl, getConnectionStatus } from "./xero";
 import { createZip } from "./zip";
@@ -102,6 +115,14 @@ function sendZip(res: ServerResponse, fileName: string, zip: Buffer) {
     "Content-Disposition": `attachment; filename="export.zip"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
   });
   res.end(zip);
+}
+
+function sendCsv(res: ServerResponse, fileName: string, matrix: string[][]) {
+  res.writeHead(200, {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="report.csv"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+  });
+  res.end(matrixToCsv(matrix));
 }
 
 function redirect(res: ServerResponse, location: string) {
@@ -176,7 +197,11 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
         });
         return sendJson(res, { entry, entries: loadJournal(tenantDir) });
       }
-      if (parts.length === 5) return sendJson(res, { entries: loadJournal(tenantDir) });
+      if (parts.length === 5) {
+        const entries = loadJournal(tenantDir);
+        if (query.get("format") === "csv") return sendCsv(res, "Journal.csv", journalToMatrix(entries));
+        return sendJson(res, { entries });
+      }
     }
 
     if (parts[4] === "bank") {
@@ -228,7 +253,29 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
     }
 
     if (parts[4] === "trial-balance" && parts.length === 5) {
-      return sendJson(res, getTrialBalance(tenantDir));
+      const report = getTrialBalance(tenantDir, query.get("asOf") || undefined);
+      if (query.get("format") === "csv") return sendCsv(res, "Trial balance.csv", trialBalanceToMatrix(report));
+      return sendJson(res, report);
+    }
+
+    if (parts[4] === "account-transactions" && parts.length === 5) {
+      const today = new Date().toISOString().slice(0, 10);
+      const financialYear = getFinancialYear(loadSettings(tenantDir), today);
+      const report = getAccountTransactions(
+        tenantDir,
+        query.get("code") ?? "",
+        query.get("from") || financialYear.start,
+        query.get("to") || today,
+      );
+      if (query.get("format") === "csv") return sendCsv(res, `Account transactions ${report.code}.csv`, accountTransactionsToMatrix(report));
+      return sendJson(res, { ...report, accounts: loadAccounts(tenantDir).map((a) => ({ code: a.code, name: a.name })) });
+    }
+
+    if (parts[4] === "aged" && parts.length === 5) {
+      const kind: AgedKind = query.get("kind") === "payables" ? "payables" : "receivables";
+      const report = getAgedBalances(tenantDir, kind, query.get("asOf") || new Date().toISOString().slice(0, 10));
+      if (query.get("format") === "csv") return sendCsv(res, `Aged ${kind}.csv`, agedToMatrix(report));
+      return sendJson(res, report);
     }
 
     if (parts[4] === "settings" && parts.length === 5) {
@@ -249,11 +296,15 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
     if (parts[4] === "profit-and-loss" && parts.length === 5) {
       const today = new Date().toISOString().slice(0, 10);
       const financialYear = getFinancialYear(loadSettings(tenantDir), today);
-      return sendJson(res, getProfitAndLoss(tenantDir, query.get("from") || financialYear.start, query.get("to") || today));
+      const report = getProfitAndLoss(tenantDir, query.get("from") || financialYear.start, query.get("to") || today);
+      if (query.get("format") === "csv") return sendCsv(res, "Profit and loss.csv", profitAndLossToMatrix(report));
+      return sendJson(res, report);
     }
 
     if (parts[4] === "balance-sheet" && parts.length === 5) {
-      return sendJson(res, getBalanceSheet(tenantDir, query.get("asOf") || new Date().toISOString().slice(0, 10)));
+      const report = getBalanceSheet(tenantDir, query.get("asOf") || new Date().toISOString().slice(0, 10));
+      if (query.get("format") === "csv") return sendCsv(res, "Balance sheet.csv", balanceSheetToMatrix(report));
+      return sendJson(res, report);
     }
 
     if (parts[4] !== "accounts") return sendJson(res, { error: "Not found" }, 404);

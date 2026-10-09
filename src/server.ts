@@ -337,14 +337,20 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
   sendJson(res, { error: "Not found" }, 404);
 }
 
+/** "24 September 2026" (a synced report's ReportDate) -> "2026-09-24". */
+function reportDateToIso(value: unknown): string | null {
+  const d = typeof value === "string" ? new Date(`${value} 12:00 UTC`) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+}
+
 // "Download all data": the CSVs and attachments, plus import.json, which GOA
 // Smart CorpSec imports to take this organisation over. import.json needs the
-// trial balance as at the conversion date (today unless ?date= says otherwise),
-// fetched live because the synced one is as at the sync day; when Xero cannot
-// be reached the zip goes out without it.
+// trial balance as at the conversion date. With ?date= it is fetched live from
+// Xero. Without, the synced trial balance is used, as at the last sync - it
+// matches the synced invoices, and needs no connection.
 async function sendAllData(res: ServerResponse, tenant: string, tenantDir: string, query: URLSearchParams) {
-  const date = query.get("date") || new Date().toISOString().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(res, { error: "The date must be YYYY-MM-DD." }, 400);
+  const askedDate = query.get("date");
+  if (askedDate && !/^\d{4}-\d{2}-\d{2}$/.test(askedDate)) return sendJson(res, { error: "The date must be YYYY-MM-DD." }, 400);
 
   const bundle = buildExportBundle(tenantDir, VIEWS);
   const entries = [
@@ -357,32 +363,52 @@ async function sendAllData(res: ServerResponse, tenant: string, tenantDir: strin
     return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>[]) : [];
   };
   const [organisation] = read("Organisation.json");
-  const client = createXeroClient(() => {}, false);
-  const connection = client.connections.find((c) => toSafeName(c.tenantName) === tenant);
-  if (organisation && connection) {
+  // Says in the zip why import.json is missing, so it is not a silent gap.
+  const leaveOut = (reason: string) => {
+    console.warn(`import.json left out of ${tenant}: ${reason}`);
+    entries.unshift({ name: "import.json - NOT INCLUDED.txt", data: Buffer.from(`import.json (for GOA) is not in this export:\r\n${reason}\r\n`, "utf8") });
+  };
+
+  let date: string | null = askedDate;
+  let trialBalanceReport: Record<string, unknown> | undefined;
+  if (!organisation) {
+    leaveOut("this organisation has not been synced.");
+  } else if (askedDate) {
     try {
-      const tbRes = await client.request(`${API_BASE}/Reports/TrialBalance?date=${date}`, connection.tenantId);
-      const tbBody = (await tbRes.json()) as { Reports?: Record<string, unknown>[] };
-      const trialBalanceReport = tbBody.Reports?.[0];
-      if (trialBalanceReport) {
-        const importBundle = buildImportBundle({
-          conversionDate: date,
-          organisation,
-          accounts: read("Accounts.json"),
-          contacts: read("Contacts.json"),
-          invoices: read("Invoices.json"),
-          creditNotes: read("CreditNotes.json"),
-          trialBalanceReport,
-          attachmentPathsById: bundle.attachmentPathsById,
-        });
-        entries.unshift({ name: "import.json", data: Buffer.from(JSON.stringify(importBundle, null, 2), "utf8") });
-      }
+      const client = createXeroClient(() => {}, false);
+      const connection = client.connections.find((c) => toSafeName(c.tenantName) === tenant);
+      if (!connection) throw new Error("not connected to this organisation in Xero.");
+      const tbRes = await client.request(`${API_BASE}/Reports/TrialBalance?date=${askedDate}`, connection.tenantId);
+      trialBalanceReport = ((await tbRes.json()) as { Reports?: Record<string, unknown>[] }).Reports?.[0];
+      if (!trialBalanceReport) leaveOut("Xero returned no trial balance for that date.");
     } catch (err) {
-      console.warn(`import.json left out of ${tenant}: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      leaveOut(
+        (message.startsWith("403") ? `Xero refused access (403): the connection to this organisation has lapsed or was removed.\r\n${message}` : message)
+        + `\r\n\r\nReconnect to Xero (Connect & sync), or leave the date empty to use the trial balance from the last sync.`,
+      );
     }
+  } else {
+    trialBalanceReport = read("Reports_TrialBalance.json")[0];
+    date = reportDateToIso(trialBalanceReport?.ReportDate);
+    if (!trialBalanceReport || !date) leaveOut("the last sync has no trial balance. Sync again, or pick a date while connected.");
   }
 
-  sendZip(res, `${tenant} - All data ${date}.zip`, createZip(entries));
+  if (organisation && trialBalanceReport && date) {
+    const importBundle = buildImportBundle({
+      conversionDate: date,
+      organisation,
+      accounts: read("Accounts.json"),
+      contacts: read("Contacts.json"),
+      invoices: read("Invoices.json"),
+      creditNotes: read("CreditNotes.json"),
+      trialBalanceReport,
+      attachmentPathsById: bundle.attachmentPathsById,
+    });
+    entries.unshift({ name: "import.json", data: Buffer.from(JSON.stringify(importBundle, null, 2), "utf8") });
+  }
+
+  sendZip(res, `${tenant} - All data${date ? ` ${date}` : ""}.zip`, createZip(entries));
 }
 
 

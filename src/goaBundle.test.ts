@@ -34,15 +34,25 @@ test("trial balance: one net line per account, code split from the name", () => 
   assert.deepEqual(lines[1], { accountSourceId: "a2", code: "200", name: "Sales", debit: 0, credit: 1500 });
 });
 
-test("trial balance: falls back to the YTD pair when only it balances", () => {
+test("trial balance: takes the YTD balances, not the month's movement, even when both balance", () => {
   const warnings: string[] = [];
   const lines = parseTrialBalance(report([
-    row("Bank (090)", "a1", "100", "", "500", ""),
-    row("Sales (200)", "a2", "", "40", "", "500"),
+    row("Expenses (429)", "a1", "1295", "", "4261.99", ""),
+    row("Accounts Payable (800)", "a2", "", "1295", "", "4261.99"),
+  ]), warnings);
+  assert.deepEqual(warnings, []);
+  assert.equal(lines[0].debit, 4261.99);
+  assert.equal(lines[1].credit, 4261.99);
+});
+
+test("trial balance: falls back to Debit/Credit when the YTD pair does not balance", () => {
+  const warnings: string[] = [];
+  const lines = parseTrialBalance(report([
+    row("Bank (090)", "a1", "500", "", "100", ""),
+    row("Sales (200)", "a2", "", "500", "", "40"),
   ]), warnings);
   assert.deepEqual(warnings, []);
   assert.equal(lines[0].debit, 500);
-  assert.equal(lines[1].credit, 500);
 });
 
 test("trial balance: warns when nothing balances", () => {

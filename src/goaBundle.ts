@@ -151,16 +151,19 @@ export function mapContacts(contacts: XeroRecord[]): BundleContact[] {
 /**
  * The trial balance report as one line per account.
  *
- * Xero's report has Debit / Credit and YTD Debit / YTD Credit columns. The pair
- * that balances is taken; if neither does, the Debit/Credit pair is used and a
- * warning says so, because GOA must not import a ledger that does not balance.
+ * Xero's report has Debit / Credit (the movement in the month of the date) and
+ * YTD Debit / YTD Credit (the balance: balance-sheet accounts to date, P&L
+ * accounts for the financial year so far). Opening balances need the YTD pair;
+ * Debit/Credit is the fallback only when there are no YTD columns or they do
+ * not balance. Neither balancing gives a warning, because GOA must not import
+ * a ledger that does not balance.
  */
 export function parseTrialBalance(report: XeroRecord, warnings: string[]): TrialBalanceLine[] {
   const rows = arr(report.Rows);
   const header = rows.find((r) => r.RowType === "Header");
   const headers = arr(header?.Cells).map((c) => String(c.Value ?? "").toLowerCase());
   const col = (name: string) => headers.indexOf(name);
-  const pairs: [number, number][] = [[col("debit"), col("credit")], [col("ytd debit"), col("ytd credit")]];
+  const pairs: [number, number][] = [[col("ytd debit"), col("ytd credit")], [col("debit"), col("credit")]];
 
   const raw: { accountSourceId: string | null; label: string; cells: XeroRecord[] }[] = [];
   for (const section of rows.filter((r) => r.RowType === "Section")) {
@@ -180,11 +183,11 @@ export function parseTrialBalance(report: XeroRecord, warnings: string[]): Trial
     lines.some((l) => l.debit !== 0 || l.credit !== 0)
     && Math.abs(lines.reduce((s, l) => s + l.debit - l.credit, 0)) < 0.01;
 
-  let chosen = build(pairs[0]);
-  if (!balances(chosen)) {
-    const ytd = pairs[1][0] >= 0 ? build(pairs[1]) : null;
-    if (ytd && balances(ytd)) chosen = ytd;
-    else warnings.push("The Xero trial balance does not balance in either column pair; check it in Xero before importing.");
+  const candidates = pairs.filter(([d, c]) => d >= 0 || c >= 0).map(build);
+  let chosen = candidates.find(balances);
+  if (!chosen) {
+    chosen = candidates[0] ?? [];
+    warnings.push("The Xero trial balance does not balance in either column pair; check it in Xero before importing.");
   }
 
   return chosen

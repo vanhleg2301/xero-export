@@ -56,7 +56,7 @@ const ENDPOINTS: EndpointSpec[] = [
   { path: "Reports/BalanceSheet", responseKey: "Reports" },
 ];
 
-const toSafeName = (name: string) => name.replace(/[<>:"/\\|?*]+/g, "_").trim();
+export const toSafeName = (name: string) => name.replace(/[<>:"/\\|?*]+/g, "_").trim();
 
 const ATTACHMENT_CONCURRENCY = 4;
 

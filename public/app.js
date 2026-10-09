@@ -1546,10 +1546,25 @@ function renderDownloads() {
               <a class="btn" href="/api/tenants/${encodeURIComponent(t)}/report">Offline viewer (.html)</a>
               <a class="btn" href="/api/tenants/${encodeURIComponent(t)}/excel">Excel (.xlsx)</a>
               <a class="btn primary" href="/api/tenants/${encodeURIComponent(t)}/download">CSV + attachments (.zip)</a>
+              <span class="goa-bundle">
+                <input type="date" class="goa-date" data-tenant="${esc(t)}" title="Conversion date: GOA takes over the day after" />
+                <button class="btn goa-btn" data-tenant="${esc(t)}">GOA import file (.json)</button>
+              </span>
             </span></div>`,
         )
         .join("")
     : `<p class="muted">No data yet. Connect to Xero, then click "Start sync".</p>`;
+  el.querySelectorAll(".goa-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const t = btn.dataset.tenant;
+      const input = el.querySelector(`.goa-date[data-tenant="${CSS.escape(t)}"]`);
+      if (!input || !input.value) {
+        alert("Pick the conversion date first: the last day the books stay in Xero, e.g. a financial year end.");
+        return;
+      }
+      location.href = `/api/tenants/${encodeURIComponent(t)}/goa-bundle?date=${input.value}`;
+    });
+  });
 }
 
 async function renderSyncPage() {

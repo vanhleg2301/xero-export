@@ -7,7 +7,8 @@
     "export": "tsx src/export.ts",
     "csv": "tsx src/csv.ts",
     "viewer": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/goaBundle.test.ts"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

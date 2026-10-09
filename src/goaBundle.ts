@@ -17,6 +17,8 @@ export interface BundleAccount {
   code: string | null;
   name: string;
   type: string;
+  /** ASSET, LIABILITY, EQUITY, REVENUE or EXPENSE: the fallback when GOA does not know the type. */
+  accountClass: string | null;
   taxType: string | null;
   systemAccount: string | null;
   status: string;
@@ -102,6 +104,7 @@ export function mapAccounts(accounts: XeroRecord[]): BundleAccount[] {
       code: str(a.Code),
       name: String(a.Name ?? ""),
       type: String(a.Type ?? ""),
+      accountClass: str(a.Class),
       taxType: str(a.TaxType),
       systemAccount: str(a.SystemAccount),
       status: String(a.Status ?? "ACTIVE"),

@@ -35,6 +35,8 @@ export interface ExportAttachment {
 export interface ExportBundle {
   files: ExportFile[];
   attachments: ExportAttachment[];
+  /** Record ID -> the paths of its attachments inside the export. */
+  attachmentPathsById: Map<string, string[]>;
 }
 
 export const toSafeFileName = (name: string) =>
@@ -103,6 +105,7 @@ export function buildExportBundle(tenantDir: string, views: ViewSpec[]): ExportB
   const files: ExportFile[] = [];
   const attachments: ExportAttachment[] = [];
   const attachedRecords: AttachedRecord[] = [];
+  const attachmentPathsById = new Map<string, string[]>();
 
   for (const view of views) {
     const records = loadRecords(tenantDir, view);
@@ -121,6 +124,7 @@ export function buildExportBundle(tenantDir: string, views: ViewSpec[]): ExportB
           return path;
         });
         pathsByRecord.set(record, paths);
+        if (view.idField) attachmentPathsById.set(String(record[view.idField]), paths);
         attachedRecords.push({ view, record, paths });
       }
     }
@@ -141,5 +145,5 @@ export function buildExportBundle(tenantDir: string, views: ViewSpec[]): ExportB
     files.unshift({ path: "Attachments.csv", name: "Attachments", kind: "table", matrix, csv: matrixToCsv(matrix) });
   }
 
-  return { files, attachments };
+  return { files, attachments, attachmentPathsById };
 }

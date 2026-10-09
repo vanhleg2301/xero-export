@@ -1545,10 +1545,9 @@ function renderDownloads() {
             <span class="actions">
               <a class="btn" href="/api/tenants/${encodeURIComponent(t)}/report">Offline viewer (.html)</a>
               <a class="btn" href="/api/tenants/${encodeURIComponent(t)}/excel">Excel (.xlsx)</a>
-              <a class="btn primary" href="/api/tenants/${encodeURIComponent(t)}/download">CSV + attachments (.zip)</a>
               <span class="goa-bundle">
-                <input type="date" class="goa-date" data-tenant="${esc(t)}" title="Conversion date: GOA takes over the day after" />
-                <button class="btn goa-btn" data-tenant="${esc(t)}">GOA import file (.json)</button>
+                <input type="date" class="goa-date" data-tenant="${esc(t)}" title="Balances as at (for import into GOA). Empty = today." />
+                <button class="btn primary goa-btn" data-tenant="${esc(t)}">CSV + attachments (.zip)</button>
               </span>
             </span></div>`,
         )
@@ -1558,11 +1557,8 @@ function renderDownloads() {
     btn.addEventListener("click", () => {
       const t = btn.dataset.tenant;
       const input = el.querySelector(`.goa-date[data-tenant="${CSS.escape(t)}"]`);
-      if (!input || !input.value) {
-        alert("Pick the conversion date first: the last day the books stay in Xero, e.g. a financial year end.");
-        return;
-      }
-      location.href = `/api/tenants/${encodeURIComponent(t)}/goa-bundle?date=${input.value}`;
+      const date = input && input.value ? `?date=${input.value}` : "";
+      location.href = `/api/tenants/${encodeURIComponent(t)}/download${date}`;
     });
   });
 }

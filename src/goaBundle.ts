@@ -1,19 +1,22 @@
-// Builds the file GOA Smart CorpSec imports to move one organisation off Xero.
+// Builds import.json, the file inside "Download all data" that GOA Smart
+// CorpSec imports to take one organisation over from Xero.
 //
 // GOA takes over at a conversion date. Rather than replaying history (Xero
 // will not hand out its journals without the Advanced plan), it takes:
 //   - the chart of accounts and contacts,
 //   - the trial balance as at the conversion date, which becomes one opening
 //     balance journal,
-//   - the sales invoices and bills still owing on that date, so later receipts
-//     and payments can be matched to them.
+//   - every sales invoice, bill and credit note up to that date, with its
+//     lines and attachments. They never post (the trial balance already holds
+//     them); the ones still owing keep that balance so later receipts and
+//     payments can be matched to them, the rest are kept as history.
 // Everything here is pure: the caller reads the JSON files and fetches the
 // trial balance; this turns them into the bundle.
 
 type XeroRecord = Record<string, unknown>;
 
 export interface BundleAccount {
-  xeroId: string;
+  sourceId: string;
   code: string | null;
   name: string;
   type: string;
@@ -26,7 +29,7 @@ export interface BundleAccount {
 }
 
 export interface BundleContact {
-  xeroId: string;
+  sourceId: string;
   name: string;
   email: string | null;
   isCustomer: boolean;
@@ -34,29 +37,50 @@ export interface BundleContact {
 }
 
 export interface TrialBalanceLine {
-  accountXeroId: string | null;
+  accountSourceId: string | null;
   code: string | null;
   name: string;
   debit: number;
   credit: number;
 }
 
-export interface OpenDocument {
-  xeroId: string;
+export interface DocumentLine {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  /** Net of tax. */
+  amount: number;
+  taxAmount: number;
+  accountCode: string | null;
+  taxType: string | null;
+}
+
+export interface BundleDocument {
+  kind: "invoice" | "bill" | "credit_note";
+  sourceId: string;
   number: string;
   reference: string | null;
-  contactXeroId: string | null;
+  contactSourceId: string | null;
   contactName: string;
   date: string;
   dueDate: string | null;
-  total: number;
-  outstanding: number;
   currency: string;
+  subtotal: number;
+  tax: number;
+  total: number;
+  /** Still owing (or, for a credit note, still to allocate) at the conversion date. */
+  outstanding: number;
+  /** The day it was settled in full, when that was on or before the conversion date. */
+  paidDate: string | null;
+  lines: DocumentLine[];
+  /** Paths of its files inside the export. */
+  attachments: string[];
 }
 
-export interface GoaBundle {
-  format: "goa-xero-bundle";
-  version: 1;
+export interface ImportBundle {
+  format: "books-import";
+  version: 2;
+  source: "xero";
   exportedAt: string;
   conversionDate: string;
   organisation: {
@@ -69,8 +93,7 @@ export interface GoaBundle {
   accounts: BundleAccount[];
   contacts: BundleContact[];
   trialBalance: TrialBalanceLine[];
-  openInvoices: OpenDocument[];
-  openBills: OpenDocument[];
+  documents: BundleDocument[];
   warnings: string[];
 }
 
@@ -100,7 +123,7 @@ export function mapAccounts(accounts: XeroRecord[]): BundleAccount[] {
   return accounts
     .filter((a) => str(a.Status) !== "DELETED")
     .map((a) => ({
-      xeroId: String(a.AccountID),
+      sourceId: String(a.AccountID),
       code: str(a.Code),
       name: String(a.Name ?? ""),
       type: String(a.Type ?? ""),
@@ -116,7 +139,7 @@ export function mapContacts(contacts: XeroRecord[]): BundleContact[] {
   return contacts
     .filter((c) => str(c.ContactStatus) !== "ARCHIVED" || c.IsCustomer === true || c.IsSupplier === true)
     .map((c) => ({
-      xeroId: String(c.ContactID),
+      sourceId: String(c.ContactID),
       name: String(c.Name ?? "").trim(),
       email: str(c.EmailAddress),
       isCustomer: c.IsCustomer === true,
@@ -139,14 +162,14 @@ export function parseTrialBalance(report: XeroRecord, warnings: string[]): Trial
   const col = (name: string) => headers.indexOf(name);
   const pairs: [number, number][] = [[col("debit"), col("credit")], [col("ytd debit"), col("ytd credit")]];
 
-  const raw: { accountXeroId: string | null; label: string; cells: XeroRecord[] }[] = [];
+  const raw: { accountSourceId: string | null; label: string; cells: XeroRecord[] }[] = [];
   for (const section of rows.filter((r) => r.RowType === "Section")) {
     for (const row of arr(section.Rows)) {
       if (row.RowType !== "Row") continue;
       const cells = arr(row.Cells);
       const first = cells[0] ?? {};
       const accountAttr = arr(first.Attributes).find((a) => a.Id === "account");
-      raw.push({ accountXeroId: str(accountAttr?.Value), label: String(first.Value ?? ""), cells });
+      raw.push({ accountSourceId: str(accountAttr?.Value), label: String(first.Value ?? ""), cells });
     }
   }
 
@@ -170,7 +193,7 @@ export function parseTrialBalance(report: XeroRecord, warnings: string[]): Trial
       const m = /^(.*?)\s*\(([^()]+)\)\s*$/.exec(r.label);
       const net = round2(debit - credit);
       return {
-        accountXeroId: r.accountXeroId,
+        accountSourceId: r.accountSourceId,
         code: m ? m[2] : null,
         name: m ? m[1] : r.label,
         debit: net > 0 ? net : 0,
@@ -180,17 +203,18 @@ export function parseTrialBalance(report: XeroRecord, warnings: string[]): Trial
     .filter((l) => l.debit !== 0 || l.credit !== 0);
 }
 
+const IN_BOOKS = ["AUTHORISED", "PAID"];
+
 /**
- * What was still owed on a document at the conversion date: its total less
- * every payment, credit note and prepayment/overpayment dated on or before it.
- * Xero does not expose the date a credit note was allocated, so the credit
- * note's own date stands in for it.
+ * What was still owed on an invoice or bill at the conversion date: its total
+ * less every payment, credit note and prepayment/overpayment dated on or
+ * before it. Xero does not expose the date a credit note was allocated, so the
+ * credit note's own date stands in for it.
  */
 export function outstandingAt(doc: XeroRecord, conversionDate: string): number {
   const docDate = toIsoDate(doc.DateString ?? doc.Date);
   if (!docDate || docDate > conversionDate) return 0;
-  const status = String(doc.Status ?? "");
-  if (!["AUTHORISED", "PAID"].includes(status)) return 0;
+  if (!IN_BOOKS.includes(String(doc.Status ?? ""))) return 0;
 
   let settled = 0;
   for (const p of arr(doc.Payments)) {
@@ -210,67 +234,176 @@ export function outstandingAt(doc: XeroRecord, conversionDate: string): number {
   return round2(toAmount(doc.Total) - settled);
 }
 
-export function openDocuments(invoices: XeroRecord[], type: "ACCREC" | "ACCPAY", conversionDate: string, baseCurrency: string, warnings: string[]): OpenDocument[] {
-  const out: OpenDocument[] = [];
-  for (const doc of invoices) {
-    if (doc.Type !== type) continue;
-    const outstanding = outstandingAt(doc, conversionDate);
-    if (outstanding <= 0.005) continue;
-    const contact = obj(doc.Contact);
-    const currency = String(doc.CurrencyCode ?? baseCurrency);
-    if (currency !== baseCurrency) {
-      warnings.push(`${doc.InvoiceNumber ?? doc.InvoiceID} is in ${currency}; it is imported at its ${currency} amount, not converted.`);
+/** A credit note's credit still unallocated and unrefunded at the conversion date. */
+export function creditRemainingAt(cn: XeroRecord, conversionDate: string): number {
+  const cnDate = toIsoDate(cn.DateString ?? cn.Date);
+  if (!cnDate || cnDate > conversionDate) return 0;
+  if (!IN_BOOKS.includes(String(cn.Status ?? ""))) return 0;
+  let used = 0;
+  for (const a of arr(cn.Allocations)) {
+    const d = toIsoDate(a.DateString ?? a.Date) ?? cnDate;
+    if (d <= conversionDate) used += toAmount(a.Amount);
+  }
+  for (const p of arr(cn.Payments)) {
+    const d = toIsoDate(p.Date);
+    if (d && d <= conversionDate) used += toAmount(p.Amount);
+  }
+  return round2(toAmount(cn.Total) - used);
+}
+
+function mapLines(doc: XeroRecord): DocumentLine[] {
+  const inclusive = String(doc.LineAmountTypes ?? "") === "Inclusive";
+  return arr(doc.LineItems).map((l) => {
+    const quantity = toAmount(l.Quantity) || 1;
+    const taxAmount = round2(toAmount(l.TaxAmount));
+    const lineAmount = toAmount(l.LineAmount);
+    const amount = round2(inclusive ? lineAmount - taxAmount : lineAmount);
+    return {
+      description: String(l.Description ?? "").trim() || String(l.ItemCode ?? "") || "—",
+      quantity,
+      unitPrice: round2(amount / quantity),
+      amount,
+      taxAmount,
+      accountCode: str(l.AccountCode),
+      taxType: str(l.TaxType),
+    };
+  });
+}
+
+function mapDocument(
+  doc: XeroRecord,
+  kind: BundleDocument["kind"],
+  idField: string,
+  numberField: string,
+  outstanding: number,
+  conversionDate: string,
+  baseCurrency: string,
+  attachmentPathsById: Map<string, string[]>,
+  warnings: string[],
+): BundleDocument {
+  const id = String(doc[idField]);
+  const contact = obj(doc.Contact);
+  const currency = String(doc.CurrencyCode ?? baseCurrency);
+  const number = String(doc[numberField] ?? "") || id.slice(0, 8);
+  if (currency !== baseCurrency) {
+    warnings.push(`${number} is in ${currency}; it is imported at its ${currency} amount, not converted.`);
+  }
+  const paid = toIsoDate(doc.FullyPaidOnDate);
+  return {
+    kind,
+    sourceId: id,
+    number,
+    reference: str(doc.Reference),
+    contactSourceId: str(contact.ContactID),
+    contactName: String(contact.Name ?? ""),
+    date: toIsoDate(doc.DateString ?? doc.Date) ?? conversionDate,
+    dueDate: toIsoDate(doc.DueDateString ?? doc.DueDate),
+    currency,
+    subtotal: round2(toAmount(doc.SubTotal)),
+    tax: round2(toAmount(doc.TotalTax)),
+    total: round2(toAmount(doc.Total)),
+    outstanding: Math.max(0, outstanding),
+    paidDate: outstanding <= 0.005 && paid && paid <= conversionDate ? paid : null,
+    lines: mapLines(doc),
+    attachments: attachmentPathsById.get(id) ?? [],
+  };
+}
+
+export function buildDocuments(input: {
+  invoices: XeroRecord[];
+  creditNotes: XeroRecord[];
+  conversionDate: string;
+  baseCurrency: string;
+  attachmentPathsById: Map<string, string[]>;
+  warnings: string[];
+}): BundleDocument[] {
+  const { conversionDate, baseCurrency, attachmentPathsById, warnings } = input;
+  const out: BundleDocument[] = [];
+  let later = 0;
+  let supplierCredit = 0;
+
+  const inScope = (doc: XeroRecord) => {
+    if (!IN_BOOKS.includes(String(doc.Status ?? ""))) return false;
+    const date = toIsoDate(doc.DateString ?? doc.Date);
+    if (!date || date > conversionDate) {
+      later++;
+      return false;
     }
-    out.push({
-      xeroId: String(doc.InvoiceID),
-      number: String(doc.InvoiceNumber ?? "") || String(doc.InvoiceID).slice(0, 8),
-      reference: str(doc.Reference),
-      contactXeroId: str(contact.ContactID),
-      contactName: String(contact.Name ?? ""),
-      date: toIsoDate(doc.DateString ?? doc.Date) ?? conversionDate,
-      dueDate: toIsoDate(doc.DueDateString ?? doc.DueDate),
-      total: round2(toAmount(doc.Total)),
-      outstanding,
-      currency,
-    });
+    return true;
+  };
+
+  for (const doc of input.invoices) {
+    if (doc.Type !== "ACCREC" && doc.Type !== "ACCPAY") continue;
+    if (!inScope(doc)) continue;
+    out.push(mapDocument(doc, doc.Type === "ACCREC" ? "invoice" : "bill", "InvoiceID", "InvoiceNumber",
+      outstandingAt(doc, conversionDate), conversionDate, baseCurrency, attachmentPathsById, warnings));
+  }
+  for (const cn of input.creditNotes) {
+    if (!inScope(cn)) continue;
+    const remaining = creditRemainingAt(cn, conversionDate);
+    if (cn.Type === "ACCPAYCREDIT") {
+      if (remaining > 0.005) supplierCredit += remaining;
+      continue;
+    }
+    if (cn.Type !== "ACCRECCREDIT") continue;
+    out.push(mapDocument(cn, "credit_note", "CreditNoteID", "CreditNoteNumber",
+      remaining, conversionDate, baseCurrency, attachmentPathsById, warnings));
+  }
+
+  if (later > 0) {
+    warnings.push(`${later} document(s) dated after the conversion date are left out: they are not in the opening balances, so enter them in GOA.`);
+  }
+  if (supplierCredit > 0) {
+    warnings.push(`Supplier credit notes with ${supplierCredit.toFixed(2)} unallocated are not imported; Accounts Payable will differ from open bills by that amount.`);
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export function buildGoaBundle(input: {
+export function buildImportBundle(input: {
   conversionDate: string;
   organisation: XeroRecord;
   accounts: XeroRecord[];
   contacts: XeroRecord[];
   invoices: XeroRecord[];
+  creditNotes: XeroRecord[];
   trialBalanceReport: XeroRecord;
+  attachmentPathsById?: Map<string, string[]>;
   now?: Date;
-}): GoaBundle {
+}): ImportBundle {
   const warnings: string[] = [];
   const org = input.organisation;
   const baseCurrency = String(org.BaseCurrency ?? "SGD");
   const accounts = mapAccounts(input.accounts);
   const trialBalance = parseTrialBalance(input.trialBalanceReport, warnings);
-  const openInvoices = openDocuments(input.invoices, "ACCREC", input.conversionDate, baseCurrency, warnings);
-  const openBills = openDocuments(input.invoices, "ACCPAY", input.conversionDate, baseCurrency, warnings);
+  const documents = buildDocuments({
+    invoices: input.invoices,
+    creditNotes: input.creditNotes,
+    conversionDate: input.conversionDate,
+    baseCurrency,
+    attachmentPathsById: input.attachmentPathsById ?? new Map(),
+    warnings,
+  });
 
-  // The documents must add up to the receivable and payable on the trial balance,
-  // or the import would leave GOA's sub-ledger out of step with its ledger.
+  // What is still owing must add up to the receivable and payable on the trial
+  // balance, or the import would leave GOA's sub-ledger out of step with its ledger.
   const balanceOf = (systemAccount: string) => {
     const acc = accounts.find((a) => a.systemAccount === systemAccount);
-    const line = acc ? trialBalance.find((l) => l.accountXeroId === acc.xeroId) : undefined;
+    const line = acc ? trialBalance.find((l) => l.accountSourceId === acc.sourceId) : undefined;
     return line ? round2(line.debit - line.credit) : 0;
   };
+  const owing = (kind: BundleDocument["kind"]) =>
+    round2(documents.filter((d) => d.kind === kind).reduce((s, d) => s + d.outstanding, 0));
   const ar = balanceOf("DEBTORS");
   const ap = -balanceOf("CREDITORS");
-  const sumAr = round2(openInvoices.reduce((s, d) => s + d.outstanding, 0));
-  const sumAp = round2(openBills.reduce((s, d) => s + d.outstanding, 0));
-  if (Math.abs(ar - sumAr) > 0.01) warnings.push(`Open invoices total ${sumAr.toFixed(2)} but Accounts Receivable is ${ar.toFixed(2)} on the trial balance.`);
-  if (Math.abs(ap - sumAp) > 0.01) warnings.push(`Open bills total ${sumAp.toFixed(2)} but Accounts Payable is ${ap.toFixed(2)} on the trial balance.`);
+  const openAr = round2(owing("invoice") - owing("credit_note"));
+  const openAp = owing("bill");
+  if (Math.abs(ar - openAr) > 0.01) warnings.push(`Open invoices less unallocated credit notes total ${openAr.toFixed(2)} but Accounts Receivable is ${ar.toFixed(2)} on the trial balance.`);
+  if (Math.abs(ap - openAp) > 0.01) warnings.push(`Open bills total ${openAp.toFixed(2)} but Accounts Payable is ${ap.toFixed(2)} on the trial balance.`);
 
   return {
-    format: "goa-xero-bundle",
-    version: 1,
+    format: "books-import",
+    version: 2,
+    source: "xero",
     exportedAt: (input.now ?? new Date()).toISOString(),
     conversionDate: input.conversionDate,
     organisation: {
@@ -283,8 +416,7 @@ export function buildGoaBundle(input: {
     accounts,
     contacts: mapContacts(input.contacts),
     trialBalance,
-    openInvoices,
-    openBills,
+    documents,
     warnings,
   };
 }

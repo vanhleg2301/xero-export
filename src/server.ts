@@ -46,7 +46,7 @@ import { buildHtmlReport } from "./htmlReport";
 import { matrixToCsv } from "./csvTables";
 import { VIEWS, type ViewSpec } from "./views";
 import { API_BASE, createXeroClient, exchangeCodeForTokens, getAuthorizeUrl, getConnectionStatus } from "./xero";
-import { buildGoaBundle } from "./goaBundle";
+import { buildImportBundle } from "./goaBundle";
 import { createZip } from "./zip";
 
 const redirectUri = new URL(getConfig().redirectUri);
@@ -337,42 +337,52 @@ async function handleBooksApi(req: IncomingMessage, res: ServerResponse, tenantD
   sendJson(res, { error: "Not found" }, 404);
 }
 
-// The file GOA Smart CorpSec imports to take this organisation over from Xero:
-// the synced chart, contacts and invoices, plus the trial balance as at the
-// conversion date, fetched live because the synced one is as at the sync day.
-async function sendGoaBundle(res: ServerResponse, tenant: string, tenantDir: string, query: URLSearchParams) {
-  const date = query.get("date") ?? "";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(res, { error: "Pick a conversion date (YYYY-MM-DD)." }, 400);
+// "Download all data": the CSVs and attachments, plus import.json, which GOA
+// Smart CorpSec imports to take this organisation over. import.json needs the
+// trial balance as at the conversion date (today unless ?date= says otherwise),
+// fetched live because the synced one is as at the sync day; when Xero cannot
+// be reached the zip goes out without it.
+async function sendAllData(res: ServerResponse, tenant: string, tenantDir: string, query: URLSearchParams) {
+  const date = query.get("date") || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(res, { error: "The date must be YYYY-MM-DD." }, 400);
+
+  const bundle = buildExportBundle(tenantDir, VIEWS);
+  const entries = [
+    ...bundle.files.map((file) => ({ name: file.path, data: Buffer.from(file.csv, "utf8") })),
+    ...bundle.attachments.map((attachment) => ({ name: attachment.path, data: readFileSync(attachment.diskPath) })),
+  ];
 
   const read = (name: string): Record<string, unknown>[] => {
     const file = resolve(tenantDir, name);
     return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>[]) : [];
   };
   const [organisation] = read("Organisation.json");
-  if (!organisation) return sendJson(res, { error: "Sync this organisation first." }, 400);
-
   const client = createXeroClient(() => {}, false);
   const connection = client.connections.find((c) => toSafeName(c.tenantName) === tenant);
-  if (!connection) return sendJson(res, { error: "Not connected to this organisation in Xero. Connect & sync first." }, 400);
+  if (organisation && connection) {
+    try {
+      const tbRes = await client.request(`${API_BASE}/Reports/TrialBalance?date=${date}`, connection.tenantId);
+      const tbBody = (await tbRes.json()) as { Reports?: Record<string, unknown>[] };
+      const trialBalanceReport = tbBody.Reports?.[0];
+      if (trialBalanceReport) {
+        const importBundle = buildImportBundle({
+          conversionDate: date,
+          organisation,
+          accounts: read("Accounts.json"),
+          contacts: read("Contacts.json"),
+          invoices: read("Invoices.json"),
+          creditNotes: read("CreditNotes.json"),
+          trialBalanceReport,
+          attachmentPathsById: bundle.attachmentPathsById,
+        });
+        entries.unshift({ name: "import.json", data: Buffer.from(JSON.stringify(importBundle, null, 2), "utf8") });
+      }
+    } catch (err) {
+      console.warn(`import.json left out of ${tenant}: ${(err as Error).message}`);
+    }
+  }
 
-  const tbRes = await client.request(`${API_BASE}/Reports/TrialBalance?date=${date}`, connection.tenantId);
-  const tbBody = (await tbRes.json()) as { Reports?: Record<string, unknown>[] };
-  const trialBalanceReport = tbBody.Reports?.[0];
-  if (!trialBalanceReport) return sendJson(res, { error: "Xero returned no trial balance for that date." }, 502);
-
-  const bundle = buildGoaBundle({
-    conversionDate: date,
-    organisation,
-    accounts: read("Accounts.json"),
-    contacts: read("Contacts.json"),
-    invoices: read("Invoices.json"),
-    trialBalanceReport,
-  });
-  res.writeHead(200, {
-    "Content-Type": MIME_TYPES[".json"],
-    "Content-Disposition": `attachment; filename="goa-import.json"; filename*=UTF-8''${encodeURIComponent(`${tenant} - GOA import ${date}.json`)}`,
-  });
-  res.end(JSON.stringify(bundle, null, 2));
+  sendZip(res, `${tenant} - All data ${date}.zip`, createZip(entries));
 }
 
 
@@ -385,11 +395,7 @@ async function handleTenantApi(req: IncomingMessage, res: ServerResponse, parts:
 
   if (parts[3] === "books") return handleBooksApi(req, res, tenantDir, parts, query);
 
-  if (parts[3] === "goa-bundle" && parts.length === 4) return sendGoaBundle(res, tenant, tenantDir, query);
-
-  if (parts[3] === "download" && parts.length === 4) {
-    return sendZip(res, `${tenant} - All data.zip`, buildZip(tenantDir, VIEWS));
-  }
+  if (parts[3] === "download" && parts.length === 4) return sendAllData(res, tenant, tenantDir, query);
 
   if (parts[3] === "excel" && parts.length === 4) {
     const workbook = buildExcelReport(buildExportBundle(tenantDir, VIEWS));
